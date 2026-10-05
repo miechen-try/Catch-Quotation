@@ -1,30 +1,37 @@
 /* PDF 維修單自動判讀工具
  *
- * 目前只擷取：
- * 1. 聯絡人
+ * 主要判讀：
+ * 1. 聯絡人／門市名稱
  * 2. SR單號
- * 3. 機器型號
- * 4. 序號
+ * 3. 機器型號／報修設備
+ * 4. 序號／設備序號
  * 5. 客戶維修單號
- * 6. 故障現象
- * 7. 檢測說明
- * 8. 品名
+ * 6. 故障現象／故障原因
+ * 7. 檢測說明／廠商檢測回覆
+ * 8. 收費方式
+ * 9. 料號
+ * 10. 品名
+ * 11. 數量
+ * 12. 單價／未稅報價
  *
  * PDF.js：文字型 PDF 直接擷取。
  * Tesseract.js：若文字太少，對 PDF 頁面做 OCR。
  */
 
 const FIELD_DEFS = [
-  { key: "contact", label: "聯絡人", type: "input" },
   { key: "srNumber", label: "SR單號", type: "input" },
-  { key: "model", label: "機器型號", type: "input" },
-  { key: "serial", label: "序號", type: "input" },
-  { key: "customerRepairNo", label: "客戶維修單號", type: "input" },
-  { key: "problem", label: "故障現象", type: "textarea" },
-  { key: "inspection", label: "檢測說明", type: "textarea" },
-  { key: "partNumbers", label: "料號", type: "textarea" },
-  { key: "unitPrices", label: "單價", type: "textarea" },
-  { key: "products", label: "品名", type: "textarea" }
+  { key: "fillDate", label: "填寫日期", type: "input" },
+  { key: "contact", label: "門市名稱", type: "input" },
+  { key: "model", label: "報修設備", type: "input" },
+  { key: "serial", label: "設備序號", type: "input" },
+  { key: "problem", label: "故障原因", type: "textarea" },
+  { key: "inspection", label: "廠商檢測回覆", type: "textarea" },
+  { key: "feeType", label: "收費方式", type: "input" },
+  { key: "partNumbers", label: "更換零件料號", type: "textarea" },
+  { key: "products", label: "更換零件品名", type: "textarea" },
+  { key: "quantities", label: "更換零件數量", type: "textarea" },
+  { key: "unitPrices", label: "未稅報價", type: "textarea" },
+  { key: "customerRepairNo", label: "客戶維修單號（其他）", type: "input" }
 ];
 
 const state = {
@@ -43,14 +50,17 @@ function emptyFields() {
   return {
     contact: "",
     srNumber: "",
+    fillDate: "",
     model: "",
     serial: "",
     customerRepairNo: "",
     problem: "",
     inspection: "",
+    feeType: "耗材收費",
     partNumbers: "",
-    unitPrices: "",
-    products: ""
+    products: "",
+    quantities: "",
+    unitPrices: ""
   };
 }
 
@@ -127,6 +137,101 @@ function cleanProductName(value) {
     .replace(/_+\s*$/g, "")
     .trim();
 }
+function formatUploadDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}/${m}/${d}`;
+}
+
+function joinForSheet(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .join("、");
+}
+
+function buildQuotationFileName() {
+  const f = getEditedFields();
+
+  const contact = (f.contact || "").trim();
+  const model = (f.model || "").trim();
+  const srNumber = (f.srNumber || "").trim();
+
+  if (!contact && !model && !srNumber) return "";
+
+  const modelText = model ? `PDA(${model})` : "";
+
+  return [
+    contact,
+    modelText && srNumber ? `${modelText}-${srNumber}` : modelText || srNumber
+  ]
+    .filter(Boolean)
+    .join("_");
+}
+
+function buildGoogleSheetRows() {
+  const f = getEditedFields();
+
+  // Google Sheet 從 C 欄開始：
+  // C SR單號
+  // D 填寫日期
+  // E 保留空白
+  // F 門市名稱
+  // G 報修設備
+  // H 設備序號
+  // I 故障原因
+  // J 廠商檢測回覆
+  // K 收費方式（預設：耗材收費）
+  // L 更換零件料號
+  // M 更換零件品名
+  // N 更換零件數量
+  // O 未稅報價
+  //
+  // 每一個零件各自一列；共同欄位會在每一列重複。
+
+  const parts = String(f.partNumbers || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const names = String(f.products || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const quantities = String(f.quantities || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const prices = String(f.unitPrices || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+  const rowCount = Math.max(parts.length, names.length, quantities.length, prices.length, 1);
+  const rows = [];
+
+  for (let i = 0; i < rowCount; i++) {
+    const row = [
+      f.srNumber,
+      f.fillDate,
+      "",
+      f.contact,
+      f.model,
+      f.serial,
+      f.problem,
+      f.inspection,
+      f.feeType || "耗材收費",
+      parts[i] || "",
+      names[i] || "",
+      quantities[i] || "",
+      prices[i] || ""
+    ];
+
+    rows.push(
+      row
+        .map(value => String(value ?? "")
+          .replace(/\t/g, " ")
+          .replace(/\r?\n/g, " "))
+        .join("\t")
+    );
+  }
+
+  return rows;
+}
+
+function buildGoogleSheetPreview() {
+  return buildGoogleSheetRows().join("\n");
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -386,11 +491,22 @@ function parseQuotation(text) {
   }
 
   /*
-   * 9. 品名
+   * 9. 收費方式
+   *
+   * 如果 PDF 本身有「收費方式」欄位就擷取；
+   * PDF 沒有提供時保持空白，不自行猜測。
+   */
+  fields.feeType = firstMatch(normalized, [
+    /收費方式\s*[:：]?\s*(.*?)(?=更換零件|料號|品名|數量|單價|金額|客戶維修單號|$)/i
+  ]);
+
+  /*
+   * 10. 品名／料號／數量／單價
    */
   const productNames = [];
-const partNumbers = [];
-const unitPrices = [];
+  const partNumbers = [];
+  const quantities = [];
+  const unitPrices = [];
 
 const lines = normalized
   .split("\n")
@@ -411,7 +527,7 @@ for (const line of lines) {
    */
 
   const m = line.match(
-    /^\s*\d+\s+((?:[A-Z0-9._-]+(?:\s+|$))+?)([\u3400-\u4dbf\u4e00-\u9fff].+?)\s+(EA|PCS|SET|個|件)\s+\d+\s+([\d,]+(?:\.\d+)?)\s+[\d,]+(?:\.\d+)?\s*$/i
+    /^\s*\d+\s+((?:[A-Z0-9._-]+(?:\s+|$))+?)([\u3400-\u4dbf\u4e00-\u9fff].+?)\s+(EA|PCS|SET|個|件)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+[\d,]+(?:\.\d+)?\s*$/i
   );
 
   if (m) {
@@ -439,7 +555,9 @@ for (const line of lines) {
      * 保留千分位：
      * 3060 → 3,060
      */
-    const unitPrice = m[4]
+    const quantity = m[4].trim();
+
+    const unitPrice = m[5]
       .replace(/,/g, "")
       .trim();
 
@@ -449,6 +567,7 @@ for (const line of lines) {
       !/^(品名|單位|數量|單價|金額)$/i.test(name)
     ) {
       partNumbers.push(partNumber);
+      quantities.push(quantity);
       unitPrices.push(
         Number(unitPrice).toLocaleString("en-US")
       );
@@ -474,17 +593,12 @@ for (const line of lines) {
     }
   }
 
-  fields.partNumbers = [
-  ...new Set(partNumbers)
-].join("\n");
+  fields.partNumbers = partNumbers.join("\n");
+  fields.products = productNames.join("\n");
+  fields.quantities = quantities.join("\n");
+  fields.unitPrices = unitPrices.join("\n");
 
-fields.unitPrices = unitPrices.join("\n");
-
-fields.products = [
-  ...new Set(productNames)
-].join("\n");
-
-return fields;
+  return fields;
 }
 
 function renderFields() {
@@ -518,12 +632,17 @@ if (def.type === "textarea") {
 
     el.addEventListener("input", () => {
       state.fields[def.key] = el.value;
+      updateQuotationFileName();
+      updateGoogleSheetPreview();
     });
 
     row.appendChild(label);
     row.appendChild(el);
     container.appendChild(row);
   }
+
+  updateQuotationFileName();
+  updateGoogleSheetPreview();
 }
 
 function getEditedFields() {
@@ -534,38 +653,57 @@ function getEditedFields() {
   return result;
 }
 
+function updateQuotationFileName() {
+  const el = $("quotationFileName");
+  if (!el) return;
+  el.textContent = buildQuotationFileName() || "—";
+}
+
+function updateGoogleSheetPreview() {
+  const el = $("googleSheetPreview");
+  if (!el) return;
+  el.textContent = buildGoogleSheetPreview() || "—";
+}
+
 function buildResultText() {
   const f = getEditedFields();
 
   return [
-    `聯絡人：${f.contact}`,
     `SR單號：${f.srNumber}`,
-    `機器型號：${f.model}`,
-    `序號：${f.serial}`,
+    `填寫日期：${f.fillDate}`,
+    `門市名稱：${f.contact}`,
+    `報修設備：${f.model}`,
+    `設備序號：${f.serial}`,
     `客戶維修單號：${f.customerRepairNo}`,
     "",
-    "故障現象：",
+    "故障原因：",
     f.problem,
     "",
-    "檢測說明：",
+    "廠商檢測回覆：",
     f.inspection,
     "",
-    "品名：",
-    f.products
+    `收費方式：${f.feeType}`,
+    "更換零件：",
+    ...buildGoogleSheetRows().map(row => {
+      const cells = row.split("\t");
+      return [cells[9], cells[10], cells[11], cells[12]].join(" | ");
+    }),
+    "",
+    `報價單檔名：${buildQuotationFileName()}`
   ].join("\n").trim();
 }
 
 async function copyResult() {
-  const text = buildResultText();
+  const text = buildGoogleSheetPreview();
 
-  if (!text) {
+  if (!text.replace(/[\t\r\n]/g, "").trim()) {
     showToast("目前沒有可複製的結果");
     return;
   }
 
   try {
     await navigator.clipboard.writeText(text);
-    showToast("已複製判讀結果");
+    showToast("已複製，可從 Google Sheet 的 C 欄直接貼上");
   } catch (error) {
     const textarea = document.createElement("textarea");
     textarea.value = text;
@@ -573,9 +711,10 @@ async function copyResult() {
     textarea.select();
     document.execCommand("copy");
     textarea.remove();
-    showToast("已複製判讀結果");
+    showToast("已複製，可從 Google Sheet 的 C 欄直接貼上");
   }
 }
+
 
 function downloadResult() {
   const text = buildResultText();
@@ -716,6 +855,7 @@ async function processFile(file) {
 
   state.currentFile = file;
   state.fields = emptyFields();
+  state.fields.fillDate = formatUploadDate(new Date());
   state.rawText = "";
   state.ocrUsed = false;
 
@@ -751,6 +891,7 @@ async function processFile(file) {
 
     state.rawText = text;
     state.fields = parseQuotation(text);
+    state.fields.fillDate = formatUploadDate(new Date());
 
     renderFields();
     $("rawText").textContent = text;
@@ -828,6 +969,8 @@ function clearAll() {
   $("workspace").classList.add("hidden");
   $("batchCard").classList.add("hidden");
   $("resultFields").innerHTML = "";
+  $("quotationFileName").textContent = "—";
+  $("googleSheetPreview").textContent = "—";
   $("rawText").textContent = "";
   $("confidenceBadge").textContent = "待判讀";
   $("fileList").innerHTML = "";

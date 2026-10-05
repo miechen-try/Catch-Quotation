@@ -455,3 +455,45 @@ button, input, textarea {
     margin-top: 12px;
   }
 }
+
+
+.quotation-name-block,
+.sheet-copy-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0f3;
+}
+
+.quotation-name-label {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 7px;
+}
+
+.quotation-name-value {
+  padding: 10px 12px;
+  background: #f6f8fa;
+  border: 1px solid #d9e1e7;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.sheet-copy-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sheet-copy-preview {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: #f6f8fa;
+  border: 1px solid #d9e1e7;
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre;
+  font-size: 11px;
+  line-height: 1.5;
+}

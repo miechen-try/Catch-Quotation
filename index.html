@@ -10,8 +10,8 @@
 <body>
   <header class="topbar">
     <div>
-      <h1>PDF 維修單自動判讀工具</h1>
-      <p>上傳 PDF → 自動擷取指定欄位 → 可直接修正 → 複製 / 下載 TXT</p>
+      <h1>精聯電子維修報價單資訊提取工具</h1>
+      <p>上傳 PDF → 自動判讀 → 可直接修正 → 一鍵複製到 Google Sheet</p>
     </div>
     <div class="status-pill" id="statusPill">尚未載入</div>
   </header>
@@ -32,7 +32,7 @@
         <span id="fileMeta">—</span>
       </div>
       <div class="toolbar-actions">
-        <button class="secondary-btn" id="copyBtn" type="button">📋 複製結果</button>
+        <button class="secondary-btn" id="copyBtn" type="button">📋 複製到 Google Sheet</button>
         <button class="secondary-btn" id="downloadBtn" type="button">💾 下載 TXT</button>
         <button class="secondary-btn danger-btn" id="clearBtn" type="button">清除</button>
       </div>
@@ -65,18 +65,26 @@
           <span class="confidence" id="confidenceBadge">待判讀</span>
         </div>
 
-       <div id="resultFields"></div>
+        <div id="resultFields"></div>
+        <div class="quotation-name-block">
+          <div class="quotation-name-label">報價單檔名</div>
+          <div id="quotationFileName" class="quotation-name-value">—</div>
+        </div>
 
-<div class="quotation-name-block">
-  <div class="quotation-name-label">報價單檔名</div>
-  <div id="quotationFileName" class="quotation-name-value">—</div>
-</div>
+        <div class="sheet-copy-block">
+          <div class="sheet-copy-header">
+            <div>
+              <div class="quotation-name-label">Google Sheet 一鍵貼上資料</div>
+              <div class="sheet-copy-hint">請在 Google Sheet 的 C 欄選取第一個儲存格後貼上；E 欄會保留空白，多個零件會自動拆成多列。</div>
+            </div>
+          </div>
+          <pre id="googleSheetPreview" class="sheet-copy-preview">—</pre>
+        </div>
 
-<div class="raw-toggle">
-  <button class="text-btn" id="rawToggleBtn" type="button">
-    顯示 / 隱藏原始文字
-  </button>
-</div>
+
+        <div class="raw-toggle">
+          <button class="text-btn" id="rawToggleBtn" type="button">顯示 / 隱藏原始文字</button>
+        </div>
         <pre class="raw-text hidden" id="rawText"></pre>
       </section>
     </div>
@@ -94,14 +102,18 @@
     <section class="help-card card">
       <h2>判讀欄位</h2>
       <div class="field-tags">
-        <span>聯絡人</span>
         <span>SR單號</span>
-        <span>機器型號</span>
-        <span>序號</span>
-        <span>客戶維修單號</span>
-        <span>故障現象</span>
-        <span>檢測說明</span>
-        <span>品名</span>
+        <span>填寫日期</span>
+        <span>門市名稱</span>
+        <span>報修設備</span>
+        <span>設備序號</span>
+        <span>故障原因</span>
+        <span>廠商檢測回覆</span>
+        <span>收費方式</span>
+        <span>更換零件料號</span>
+        <span>更換零件品名</span>
+        <span>更換零件數量</span>
+        <span>未稅報價</span>
       </div>
       <p class="privacy-note">🔒 PDF 預設在你的瀏覽器中處理，不會自動上傳到本網站伺服器。</p>
     </section>
