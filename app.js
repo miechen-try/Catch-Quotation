@@ -180,14 +180,16 @@ function buildQuotationFileName() {
 
   if (!contact && !model && !srNumber) return "";
 
-  const modelText = model ? `PDA(${model})` : "";
-
-  return [
+  // 報價單檔名格式：門市名稱_報修設備-SR單號.pdf
+  // 例如：新竹東光 - 智取店_標籤機SBARCO(含裁刀)-3965826.pdf
+  const baseName = [
     contact,
-    modelText && srNumber ? `${modelText}-${srNumber}` : modelText || srNumber
+    model && srNumber ? `${model}-${srNumber}` : model || srNumber
   ]
     .filter(Boolean)
     .join("_");
+
+  return baseName ? `${baseName}.pdf` : "";
 }
 
 function buildGoogleSheetRows() {
@@ -621,9 +623,17 @@ function getEditedFields() {
 }
 
 function updateQuotationFileName() {
+  const fileName = buildQuotationFileName();
+
   const el = $("quotationFileName");
-  if (!el) return;
-  el.textContent = buildQuotationFileName() || "—";
+  if (el) el.textContent = fileName || "—";
+
+  // 上方工具列的檔名也使用「修改後」的報價單檔名，
+  // 讓「複製報價單檔名」複製的內容與紅框顯示完全一致。
+  const toolbarFileName = $("fileName");
+  if (toolbarFileName && fileName) {
+    toolbarFileName.textContent = fileName;
+  }
 }
 
 function updateGoogleSheetPreview() {
@@ -856,6 +866,7 @@ async function processFile(file) {
     state.fields.fillDate = formatUploadDate(new Date());
 
     renderFields();
+    updateQuotationFileName();
     $("rawText").textContent = text;
 
     const filled = FIELD_DEFS.filter(d => state.fields[d.key]?.trim()).length;
