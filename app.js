@@ -683,31 +683,26 @@ async function copyResult() {
 }
 
 
-function downloadResult() {
-  const text = buildResultText();
-  if (!text) {
-    showToast("目前沒有可下載的結果");
+async function copyQuotationFileName() {
+  const fileName = buildQuotationFileName();
+
+  if (!fileName) {
+    showToast("目前沒有可複製的報價單檔名");
     return;
   }
 
-  const fileBase = state.currentFile
-    ? state.currentFile.name.replace(/\.pdf$/i, "")
-    : "PDF判讀結果";
-
-  const blob = new Blob(["\ufeff", text], {
-    type: "text/plain;charset=utf-8"
-  });
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${fileBase}_判讀結果.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  showToast("TXT 已下載");
+  try {
+    await navigator.clipboard.writeText(fileName);
+    showToast("已複製報價單檔名");
+  } catch (error) {
+    const textarea = document.createElement("textarea");
+    textarea.value = fileName;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+    showToast("已複製報價單檔名");
+  }
 }
 
 async function loadPdfJs() {
@@ -974,7 +969,7 @@ $("dropZone").addEventListener("drop", event => {
 });
 
 $("copyBtn").addEventListener("click", copyResult);
-$("downloadBtn").addEventListener("click", downloadResult);
+$("copyFileNameBtn").addEventListener("click", copyQuotationFileName);
 $("clearBtn").addEventListener("click", clearAll);
 
 $("prevPageBtn").addEventListener("click", () => {
