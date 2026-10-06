@@ -714,6 +714,8 @@ if (def.type === "textarea") {
       }
       row.classList.toggle("field-updated", state.modifiedKeys.has(def.key));
       state.updated = state.modifiedKeys.size > 0;
+      updateQuotationFileName();
+      updateGoogleSheetPreview();
     });
 
     row.appendChild(label);
@@ -725,35 +727,6 @@ if (def.type === "textarea") {
   updateGoogleSheetPreview();
 }
 
-function updateData() {
-  const edited = getEditedFields();
-  const changedThisTime = [];
-
-  for (const def of FIELD_DEFS) {
-    const before = String(state.originalFields[def.key] || '').trim();
-    const after = String(edited[def.key] || '').trim();
-    if (before !== after) {
-      state.modifiedKeys.add(def.key);
-      changedThisTime.push(def.key);
-    }
-  }
-
-  state.fields = { ...edited };
-  state.updated = state.modifiedKeys.size > 0;
-
-  // 保留所有已人工修改過的欄位標示，不因按下「更新資料」而消失。
-  for (const def of FIELD_DEFS) {
-    const row = document.querySelector(`#field-${def.key}`)?.closest('.field-row');
-    if (row) row.classList.toggle('field-updated', state.modifiedKeys.has(def.key));
-  }
-
-  updateQuotationFileName();
-  updateGoogleSheetPreview();
-
-  const filled = FIELD_DEFS.filter(d => String(state.fields[d.key] || '').trim()).length;
-  $("confidenceBadge").textContent = `已更新・${filled}/${FIELD_DEFS.length} 欄位`;
-  showToast(changedThisTime.length ? `資料已更新，${changedThisTime.length} 個欄位已標示` : '資料已更新');
-}
 
 function getEditedFields() {
   const result = {};
@@ -897,7 +870,7 @@ async function renderPage(pageNo) {
   state.currentPage = Math.max(1, Math.min(pageNo, state.pdfDoc.numPages));
 
   const page = await state.pdfDoc.getPage(state.currentPage);
-  const viewport = page.getViewport({ scale: 1.45 });
+  const viewport = page.getViewport({ scale: state.pdfZoom || 1.45 });
   const canvas = $("pdfCanvas");
   const context = canvas.getContext("2d");
 
@@ -1124,7 +1097,6 @@ $("dropZone").addEventListener("drop", event => {
 });
 
 $("copyBtn").addEventListener("click", copyResult);
-$("updateBtn").addEventListener("click", updateData);
 $("copyFileNameBtn").addEventListener("click", copyQuotationFileName);
 $("clearBtn").addEventListener("click", clearAll);
 
@@ -1135,6 +1107,51 @@ $("prevPageBtn").addEventListener("click", () => {
 $("nextPageBtn").addEventListener("click", () => {
   renderPage(state.currentPage + 1);
 });
+
+$("pdfZoomOutBtn").addEventListener("click", async () => {
+  state.pdfZoom = Math.max(0.6, +(state.pdfZoom - 0.15).toFixed(2));
+  $("pdfZoomLabel").textContent = `${Math.round(state.pdfZoom * 100)}%`;
+  await renderPage(state.currentPage);
+});
+
+$("pdfZoomInBtn").addEventListener("click", async () => {
+  state.pdfZoom = Math.min(3.5, +(state.pdfZoom + 0.15).toFixed(2));
+  $("pdfZoomLabel").textContent = `${Math.round(state.pdfZoom * 100)}%`;
+  await renderPage(state.currentPage);
+});
+
+$("pdfZoomFitBtn").addEventListener("click", async () => {
+  state.pdfZoom = 1.45;
+  $("pdfZoomLabel").textContent = "145%";
+  await renderPage(state.currentPage);
+});
+
+// PDF 放大後可直接拖曳瀏覽
+(() => {
+  const viewer = $("pdfViewer");
+  let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  viewer.addEventListener("pointerdown", e => {
+    if (e.target !== $("pdfCanvas")) return;
+    dragging = true;
+    viewer.classList.add("is-panning");
+    startX = e.clientX; startY = e.clientY;
+    startLeft = viewer.scrollLeft; startTop = viewer.scrollTop;
+    viewer.setPointerCapture(e.pointerId);
+  });
+  viewer.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    viewer.scrollLeft = startLeft - (e.clientX - startX);
+    viewer.scrollTop = startTop - (e.clientY - startY);
+  });
+  const stop = e => {
+    if (!dragging) return;
+    dragging = false;
+    viewer.classList.remove("is-panning");
+    try { viewer.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  viewer.addEventListener("pointerup", stop);
+  viewer.addEventListener("pointercancel", stop);
+})();
 
 $("rawToggleBtn").addEventListener("click", () => {
   $("rawText").classList.toggle("hidden");

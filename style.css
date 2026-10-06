@@ -574,3 +574,75 @@ button, input, textarea {
   font-size: 11px;
   line-height: 1.5;
 }
+
+/* 20261006 PDF 縮放與收合區塊 */
+.pdf-zoom-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+.pdf-zoom-controls button {
+  min-width: 34px;
+  height: 32px;
+  border: 1px solid #d7dfe5;
+  background: #fff;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdf-zoom-controls button:hover { background: #f4f7f9; }
+#pdfZoomLabel {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  color: #52616d;
+  font-weight: 700;
+}
+.pdf-viewer {
+  cursor: grab;
+  overflow: auto;
+}
+.pdf-viewer.is-panning { cursor: grabbing; }
+.pdf-viewer canvas { display: block; margin: 0 auto; }
+
+.collapsible-block {
+  margin-top: 14px;
+  border-top: 1px solid #edf0f3;
+  border-bottom: 1px solid #edf0f3;
+  padding: 0;
+}
+.collapsible-block summary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  user-select: none;
+}
+.collapsible-block summary::-webkit-details-marker { display: none; }
+.collapse-sign {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #cfd8df;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+.collapsible-block[open] .collapse-sign { font-size: 0; }
+.collapsible-block[open] .collapse-sign::before { content: "−"; font-size: 15px; }
+.collapsible-block .quotation-name-value,
+.collapsible-block .sheet-copy-preview,
+.collapsible-block .sheet-copy-hint {
+  margin-bottom: 12px;
+}
