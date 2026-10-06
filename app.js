@@ -45,6 +45,7 @@ const state = {
   rawText: "",
   ocrUsed: false,
   originalFields: emptyFields(),
+  modifiedKeys: new Set(),
   updated: false
 };
 
@@ -701,8 +702,18 @@ if (def.type === "textarea") {
 
     el.addEventListener("input", () => {
       state.fields[def.key] = el.value;
-      row.classList.remove("field-updated");
-      state.updated = false;
+
+      // 人工修改後立即標示；按下「更新資料」後也維持標示。
+      const before = String(state.originalFields[def.key] || "").trim();
+      const after = String(el.value || "").trim();
+      if (before !== after) {
+        state.modifiedKeys.add(def.key);
+      } else {
+        // 若使用者把內容改回原始判讀結果，則取消該欄位標示。
+        state.modifiedKeys.delete(def.key);
+      }
+      row.classList.toggle("field-updated", state.modifiedKeys.has(def.key));
+      state.updated = state.modifiedKeys.size > 0;
     });
 
     row.appendChild(label);
@@ -716,20 +727,24 @@ if (def.type === "textarea") {
 
 function updateData() {
   const edited = getEditedFields();
-  const changedKeys = [];
+  const changedThisTime = [];
 
   for (const def of FIELD_DEFS) {
     const before = String(state.originalFields[def.key] || '').trim();
     const after = String(edited[def.key] || '').trim();
-    if (before !== after) changedKeys.push(def.key);
+    if (before !== after) {
+      state.modifiedKeys.add(def.key);
+      changedThisTime.push(def.key);
+    }
   }
 
   state.fields = { ...edited };
-  state.updated = true;
+  state.updated = state.modifiedKeys.size > 0;
 
+  // 保留所有已人工修改過的欄位標示，不因按下「更新資料」而消失。
   for (const def of FIELD_DEFS) {
     const row = document.querySelector(`#field-${def.key}`)?.closest('.field-row');
-    if (row) row.classList.toggle('field-updated', changedKeys.includes(def.key));
+    if (row) row.classList.toggle('field-updated', state.modifiedKeys.has(def.key));
   }
 
   updateQuotationFileName();
@@ -737,7 +752,7 @@ function updateData() {
 
   const filled = FIELD_DEFS.filter(d => String(state.fields[d.key] || '').trim()).length;
   $("confidenceBadge").textContent = `已更新・${filled}/${FIELD_DEFS.length} 欄位`;
-  showToast(changedKeys.length ? `資料已更新，${changedKeys.length} 個欄位已標示` : '資料已更新，沒有欄位變更');
+  showToast(changedThisTime.length ? `資料已更新，${changedThisTime.length} 個欄位已標示` : '資料已更新');
 }
 
 function getEditedFields() {
@@ -1061,6 +1076,7 @@ function clearAll() {
   state.currentFile = null;
   state.fields = emptyFields();
   state.originalFields = emptyFields();
+  state.modifiedKeys = new Set();
   state.updated = false;
   state.rawText = "";
   state.ocrUsed = false;
