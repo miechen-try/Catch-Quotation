@@ -43,7 +43,8 @@ const state = {
   currentFile: null,
   fields: emptyFields(),
   rawText: "",
-  ocrUsed: false
+  ocrUsed: false,
+  pdfBlocks: []
 };
 
 function emptyFields() {
@@ -315,6 +316,22 @@ function parseQuotation(text) {
   const normalized = normalizeText(text);
   const fields = emptyFields();
   const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
+
+  // 優先使用 PDF 座標切出的「設備表區塊」。這能避免雙欄版面把右側
+  // Email / SR 單號誤併到左側設備序號，也能保留同一列的故障與檢測內容。
+  const blockRows = (state.pdfBlocks || []).flatMap(p => p.machineRows || []);
+  if (blockRows.length) {
+    const valid = blockRows.filter(r => r.machine || r.problem || r.inspection);
+    const first = valid.find(r => r.machine && !/機器|序號|故障|檢測/.test(r.machine));
+    if (first) {
+      const modelMatch = first.machine.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-?\d+|Sewoo|SBarco(?:\(含裁刀\))?|ZD\d+|DA\d+|TSC\s+ALPHA-40L)\b/i);
+      if (!fields.model && modelMatch) fields.model = modelMatch[1];
+      const serialMatch = first.machine.match(/\b(UTA[A-Z0-9._-]{6,}|UT\d{8,}|\d{10,})\b/i);
+      if (!fields.serial && serialMatch) fields.serial = serialMatch[1];
+      if (!fields.problem && first.problem) fields.problem = cleanIssueText(first.problem, fields.serial);
+      if (!fields.inspection && first.inspection) fields.inspection = cleanIssueText(first.inspection, fields.serial);
+    }
+  }
 
   // 1. 門市名稱
   fields.contact = firstMatch(normalized, [
@@ -848,20 +865,8 @@ async function loadPdfJs() {
 }
 
 async function extractPdfText(pdf) {
-  let allText = "";
-
-  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
-    const page = await pdf.getPage(pageNo);
-    const content = await page.getTextContent();
-
-    const pageText = content.items
-  .map(item => `${item.str || ""}${item.hasEOL ? "\n" : " "}`)
-  .join("");
-
-    allText += `\n--- 第 ${pageNo} 頁 ---\n${pageText}\n`;
-  }
-
-  return normalizeText(allText);
+  state.pdfBlocks = await extractPdfBlocks(pdf);
+  return blocksToText(state.pdfBlocks);
 }
 
 async function renderPdfTextLayer(page, viewport) {
@@ -875,34 +880,136 @@ async function renderPdfTextLayer(page, viewport) {
   layer.style.width = `${viewport.width}px`;
   layer.style.height = `${viewport.height}px`;
 
+  /*
+   * 使用 PDF.js 官方 TextLayer，而不是自行把每個字做成絕對定位 span。
+   * 舊方式在雙欄報價單上很容易讓瀏覽器的文字選取範圍跳到 Email、SR
+   * 單號或其他欄位。官方 TextLayer 會依 PDF 的文字矩陣建立正確的選取區域。
+   */
   const content = await page.getTextContent();
-  const util = state.pdfjs?.Util;
+  const TextLayer = state.pdfjs?.TextLayer;
 
+  if (TextLayer) {
+    const textLayer = new TextLayer({
+      textContentSource: content,
+      container: layer,
+      viewport
+    });
+    await textLayer.render();
+    return;
+  }
+
+  // 舊版 PDF.js 備援：若沒有 TextLayer API 才使用手動定位。
+  const util = state.pdfjs?.Util;
   for (const item of content.items) {
     if (!item.str) continue;
-
     const span = document.createElement("span");
     span.textContent = item.str;
-
-    let tx;
-    if (util?.transform) {
-      tx = util.transform(viewport.transform, item.transform);
-    } else {
-      tx = item.transform;
-    }
-
+    const tx = util?.transform ? util.transform(viewport.transform, item.transform) : item.transform;
     const fontHeight = Math.max(1, Math.hypot(tx[2], tx[3]));
     const angle = Math.atan2(tx[1], tx[0]);
     const scaleX = Math.max(0.01, Math.hypot(tx[0], tx[1]) / fontHeight);
-
     span.style.left = `${tx[4]}px`;
     span.style.top = `${tx[5] - fontHeight}px`;
     span.style.fontSize = `${fontHeight}px`;
     span.style.lineHeight = `${fontHeight}px`;
     span.style.transform = `rotate(${angle}rad) scaleX(${scaleX})`;
-
     layer.appendChild(span);
   }
+}
+
+function groupPdfTextItems(items) {
+  const rows = [];
+  const tolerance = 3.5;
+
+  for (const item of items) {
+    if (!item.str || !item.str.trim()) continue;
+    const x = item.transform?.[4] || 0;
+    const y = item.transform?.[5] || 0;
+    const width = item.width || 0;
+    let row = rows.find(r => Math.abs(r.y - y) <= tolerance);
+    if (!row) {
+      row = { y, items: [] };
+      rows.push(row);
+    }
+    row.items.push({ ...item, x, y, width });
+  }
+
+  rows.sort((a, b) => b.y - a.y);
+  return rows.map(row => {
+    row.items.sort((a, b) => a.x - b.x);
+    let text = "";
+    let lastEnd = null;
+    for (const item of row.items) {
+      const gap = lastEnd == null ? 0 : item.x - lastEnd;
+      const separator = lastEnd != null && gap > Math.max(2.5, item.height || 8) ? " " : "";
+      text += separator + item.str;
+      lastEnd = item.x + item.width;
+    }
+    return { y: row.y, items: row.items, text: text.trim() };
+  }).filter(r => r.text);
+}
+
+async function extractPdfBlocks(pdf) {
+  const pages = [];
+
+  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+    const page = await pdf.getPage(pageNo);
+    const content = await page.getTextContent();
+    const rows = groupPdfTextItems(content.items);
+    const pageBlock = { pageNo, rows, machineRows: [], productRows: [] };
+
+    // 依「機器品號／故障現象／檢測說明」表頭的位置建立三個欄位。
+    const machineHeader = rows.find(r => /機\s*器\s*品\s*號|序\s*號/.test(r.text) && /故\s*障\s*現\s*象/.test(r.text) && /檢\s*測\s*說\s*明/.test(r.text));
+    if (machineHeader) {
+      const xs = {};
+      for (const item of machineHeader.items) {
+        if (/機\s*器|序\s*號/.test(item.str)) xs.machine = item.x;
+        if (/故\s*障/.test(item.str)) xs.problem = item.x;
+        if (/檢\s*測/.test(item.str)) xs.inspection = item.x;
+      }
+      if (xs.machine != null && xs.problem != null && xs.inspection != null) {
+        const nextRows = rows.filter(r => r.y < machineHeader.y).slice(0, 14);
+        for (const r of nextRows) {
+          const cols = { machine: [], problem: [], inspection: [] };
+          for (const item of r.items) {
+            if (item.x < xs.problem) cols.machine.push(item.str);
+            else if (item.x < xs.inspection) cols.problem.push(item.str);
+            else cols.inspection.push(item.str);
+          }
+          const machine = cols.machine.join("").trim();
+          const problem = cols.problem.join(" ").trim();
+          const inspection = cols.inspection.join(" ").trim();
+          if (machine || problem || inspection) {
+            pageBlock.machineRows.push({ machine, problem, inspection });
+          }
+        }
+      }
+    }
+
+    // 零件表：以「料號／品名／單位／數量／單價／金額」為區塊邊界。
+    const productHeader = rows.find(r => /料\s*號/.test(r.text) && /品\s*名/.test(r.text) && /數\s*量/.test(r.text) && /單\s*價/.test(r.text));
+    if (productHeader) {
+      const headerY = productHeader.y;
+      const endRow = rows.find(r => r.y < headerY && /^(合計|總計)/.test(r.text));
+      const candidates = rows.filter(r => r.y < headerY && (!endRow || r.y > endRow.y));
+      for (const r of candidates) {
+        if (/^(合計|總計|稅|總額)/.test(r.text)) continue;
+        if (/^\d+\s+/.test(r.text)) pageBlock.productRows.push(r.text);
+      }
+    }
+
+    pages.push(pageBlock);
+  }
+  return pages;
+}
+
+function blocksToText(blocks) {
+  const out = [];
+  for (const page of blocks) {
+    out.push(`--- 第 ${page.pageNo} 頁 ---`);
+    for (const row of page.rows) out.push(row.text);
+  }
+  return normalizeText(out.join("\n"));
 }
 
 async function renderPage(pageNo) {
@@ -987,6 +1094,7 @@ async function processFile(file) {
   state.fields.fillDate = formatUploadDate(new Date());
   state.rawText = "";
   state.ocrUsed = false;
+  state.pdfBlocks = [];
 
   $("fileName").textContent = file.name;
   $("fileMeta").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
@@ -1027,10 +1135,11 @@ async function processFile(file) {
     $("rawText").textContent = text;
 
     const filled = FIELD_DEFS.filter(d => state.fields[d.key]?.trim()).length;
+    const blockCount = (state.pdfBlocks || []).reduce((n, p) => n + (p.machineRows?.length || 0), 0);
     $("confidenceBadge").textContent =
       state.ocrUsed
         ? `OCR・${filled}/${FIELD_DEFS.length} 欄位`
-        : `文字擷取・${filled}/${FIELD_DEFS.length} 欄位`;
+        : `區塊分析・${filled}/${FIELD_DEFS.length} 欄位${blockCount ? `・設備區塊 ${blockCount}` : ""}`;
 
     setStatus("判讀完成");
     showToast(`判讀完成：${filled}/${FIELD_DEFS.length} 個欄位有資料`);
@@ -1093,6 +1202,7 @@ function clearAll() {
   state.fields = emptyFields();
   state.rawText = "";
   state.ocrUsed = false;
+  state.pdfBlocks = [];
 
   $("pdfInput").value = "";
   $("toolbar").classList.add("hidden");

@@ -278,6 +278,35 @@ button, input, textarea {
   background: rgba(37, 99, 235, .28);
 }
 
+/* PDF.js 官方文字層：讓滑鼠選取依 PDF 真實文字位置工作。 */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1.0;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+  user-select: text;
+  pointer-events: auto;
+}
+
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer span::selection,
+.textLayer ::selection {
+  background: rgba(37, 99, 235, .28);
+}
+
 .manual-paste-block {
   margin-top: 16px;
   padding-top: 14px;
