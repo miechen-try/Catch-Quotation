@@ -23,8 +23,8 @@ const FIELD_DEFS = [
   { key: "srNumber", label: "SR單號", type: "input" },
   { key: "fillDate", label: "填寫日期", type: "input" },
   { key: "contact", label: "門市名稱", type: "input" },
-  { key: "model", label: "報修設備", type: "input" },
-  { key: "serial", label: "設備序號", type: "input" },
+  { key: "model", label: "報修設備", type: "textarea" },
+  { key: "serial", label: "設備序號", type: "textarea" },
   { key: "problem", label: "故障原因", type: "textarea" },
   { key: "inspection", label: "廠商檢測回覆", type: "textarea" },
   { key: "feeType", label: "收費方式", type: "input" },
@@ -243,12 +243,23 @@ function buildGoogleSheetRows() {
   //
   // 每一個零件各自一列；共同欄位會在每一列重複。
 
-  const parts = String(f.partNumbers || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const names = String(f.products || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const quantities = String(f.quantities || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const prices = String(f.unitPrices || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const splitRows = (value) => String(value || "")
+    .split(/\r?\n/)
+    .map(x => x.trim());
 
-  const rowCount = Math.max(parts.length, names.length, quantities.length, prices.length, 1);
+  const parts = splitRows(f.partNumbers).filter(Boolean);
+  const names = splitRows(f.products).filter(Boolean);
+  const quantities = splitRows(f.quantities).filter(Boolean);
+  const prices = splitRows(f.unitPrices).filter(Boolean);
+  const models = splitRows(f.model);
+  const serials = splitRows(f.serial);
+  const problems = splitRows(f.problem);
+  const inspections = splitRows(f.inspection);
+
+  const rowCount = Math.max(
+    parts.length, names.length, quantities.length, prices.length,
+    models.length, serials.length, problems.length, inspections.length, 1
+  );
   const rows = [];
 
   for (let i = 0; i < rowCount; i++) {
@@ -258,10 +269,10 @@ function buildGoogleSheetRows() {
       f.fillDate,
       "",
       f.contact,
-      getSheetModel(f.model),
-      f.serial,
-      f.problem,
-      f.inspection,
+      getSheetModel(models[i] || models[0] || ""),
+      serials[i] || serials[0] || "",
+      problems[i] || problems[0] || "",
+      inspections[i] || inspections[0] || "",
       f.feeType || "耗材收費",
       parts[i] || "",
       names[i] || "",
