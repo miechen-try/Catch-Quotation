@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="精聯電子維修報價單資訊提取工具">
   <title>精聯電子維修報價單資訊提取工具</title>
-  <link rel="stylesheet" href="style.css?v=20261006-4">
+  <link rel="stylesheet" href="style.css?v=20261006-2">
 </head>
 <body>
   <header class="topbar">
@@ -51,10 +51,7 @@
           </div>
         </div>
         <div class="pdf-viewer" id="pdfViewer">
-          <div class="pdf-page-wrap" id="pdfPageWrap">
-            <canvas id="pdfCanvas"></canvas>
-            <div class="pdf-text-layer" id="pdfTextLayer"></div>
-          </div>
+          <canvas id="pdfCanvas"></canvas>
           <div class="viewer-empty" id="viewerEmpty">尚未載入 PDF</div>
         </div>
       </section>
@@ -72,16 +69,6 @@
         <div class="quotation-name-block">
           <div class="quotation-name-label">報價單檔名</div>
           <div id="quotationFileName" class="quotation-name-value">—</div>
-        </div>
-
-        <div class="manual-paste-block">
-          <div class="quotation-name-label">PDF 內容手動補抓</div>
-          <div class="manual-paste-hint">如果自動判讀不完整，可以直接在左側 PDF 預覽選取文字後按 Ctrl+C，再貼到這裡；也可以直接貼到右側任何判讀欄位。如果自動判讀不完整，可把 PDF 文字貼到這裡重新判讀。此版本以原本較穩定的整體文字判讀核心為主，不依賴 PDF 座標區塊分析。</div>
-          <textarea id="manualPdfText" class="manual-paste-text" placeholder="把 PDF 內容貼到這裡，再按「用貼上內容重新判讀」"></textarea>
-          <div class="manual-paste-actions">
-            <button class="secondary-btn" id="copyRawTextBtn" type="button">📋 複製目前 PDF 文字</button>
-            <button class="secondary-btn" id="parseManualTextBtn" type="button">🔎 用貼上內容重新判讀</button>
-          </div>
         </div>
 
         <div class="sheet-copy-block">
@@ -135,7 +122,8 @@
 
   <div class="toast" id="toast"></div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <script src="app.js?v=20261006-4"></script>
+  <script src="app.js?v=20261006-2"></script>
 </body>
 </html>

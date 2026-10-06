@@ -1,31 +1,37 @@
 /* PDF 維修單自動判讀工具
  *
- * 目前只擷取：
- * 1. 聯絡人
+ * 主要判讀：
+ * 1. 聯絡人／門市名稱
  * 2. SR單號
- * 3. 機器型號
- * 4. 序號
+ * 3. 機器型號／報修設備
+ * 4. 序號／設備序號
  * 5. 客戶維修單號
- * 6. 故障現象
- * 7. 檢測說明
- * 8. 品名
+ * 6. 故障現象／故障原因
+ * 7. 檢測說明／廠商檢測回覆
+ * 8. 收費方式
+ * 9. 料號
+ * 10. 品名
+ * 11. 數量
+ * 12. 單價／未稅報價
  *
  * PDF.js：文字型 PDF 直接擷取。
  * Tesseract.js：若文字太少，對 PDF 頁面做 OCR。
  */
 
 const FIELD_DEFS = [
-  { key: "contact", label: "聯絡人", type: "input" },
+  { key: "caseNumber", label: "案件編號", type: "input" },
   { key: "srNumber", label: "SR單號", type: "input" },
-  { key: "model", label: "機器型號", type: "input" },
-  { key: "serial", label: "序號", type: "input" },
-  { key: "customerRepairNo", label: "客戶維修單號", type: "input" },
-  { key: "problem", label: "故障現象", type: "textarea" },
-  { key: "inspection", label: "檢測說明", type: "textarea" },
-  { key: "partNumbers", label: "料號", type: "textarea" },
-  { key: "unitPrices", label: "單價", type: "textarea" },
-  { key: "quantities", label: "數量", type: "textarea" },
-  { key: "products", label: "品名", type: "textarea" }
+  { key: "fillDate", label: "填寫日期", type: "input" },
+  { key: "contact", label: "門市名稱", type: "input" },
+  { key: "model", label: "報修設備", type: "input" },
+  { key: "serial", label: "設備序號", type: "input" },
+  { key: "problem", label: "故障原因", type: "textarea" },
+  { key: "inspection", label: "廠商檢測回覆", type: "textarea" },
+  { key: "feeType", label: "收費方式", type: "input" },
+  { key: "partNumbers", label: "更換零件料號", type: "textarea" },
+  { key: "products", label: "更換零件品名", type: "textarea" },
+  { key: "quantities", label: "更換零件數量", type: "textarea" },
+  { key: "unitPrices", label: "未稅報價", type: "textarea" },
 ];
 
 const state = {
@@ -43,16 +49,18 @@ const state = {
 function emptyFields() {
   return {
     contact: "",
+    caseNumber: "",
     srNumber: "",
+    fillDate: "",
     model: "",
     serial: "",
-    customerRepairNo: "",
     problem: "",
     inspection: "",
+    feeType: "耗材收費",
     partNumbers: "",
-    unitPrices: "",
+    products: "",
     quantities: "",
-    products: ""
+    unitPrices: ""
   };
 }
 
@@ -119,6 +127,25 @@ function cleanSingleLine(value) {
     .replace(/[ \t]+/g, " ")
     .trim();
 }
+function cleanIssueText(value, serial = "") {
+  if (!value) return "";
+
+  let result = value
+    .replace(/\u00a0/g, " ")
+    .replace(/\r?\n/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+
+  // PDF 換行可能把序號殘留到檢測說明中，先移除。
+  if (serial) {
+    result = result.replace(new RegExp(escapeRegExp(serial), "gi"), "");
+  }
+
+  // 中文句子因 PDF 換行產生的空白要合併，例如「無 法」→「無法」。
+  result = result.replace(/([\u3400-\u4dbf\u4e00-\u9fff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$1");
+
+  return result.replace(/[ \t]+/g, " ").trim();
+}
 function cleanProductName(value) {
   if (!value) return "";
 
@@ -129,6 +156,135 @@ function cleanProductName(value) {
     .replace(/_+\s*$/g, "")
     .trim();
 }
+function formatUploadDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}/${m}/${d}`;
+}
+
+const MODEL_SHEET_MAP = {
+  "MS838": "有線掃碼槍MS838",
+  "MS842": "無線掃瑪槍MS842P",
+  "MS852": "無線掃碼槍MS852P",
+  "RP-700": "熱感應機RP-700",
+  "Sewoo": "熱感應機Sewoo",
+  "SBarco": "標籤機SBarco",
+  "SBarco(含裁刀)": "標籤機SBarco(含裁刀)",
+  "ZD230": "標籤機ZD230",
+  "PA760": "PDA(PA760)",
+  "PA768": "PDA(PA768)",
+  "PA760槍把": "PDA槍把(PA760)",
+  "PA768槍把": "PDA槍把(PA768)",
+  "DA210": "藍芽標籤機DA210",
+  "TSC ALPHA-40L": "攜帶式藍芽標籤機TSC ALPHA-40L"
+};
+
+function getSheetModel(model) {
+  const raw = String(model || "").trim();
+  if (MODEL_SHEET_MAP[raw]) return MODEL_SHEET_MAP[raw];
+
+  // 容許 PDF 中多一點空白或大小寫差異。
+  const normalized = raw.replace(/\s+/g, " ");
+  const key = Object.keys(MODEL_SHEET_MAP).find(k =>
+    k.toLowerCase() === normalized.toLowerCase()
+  );
+  return key ? MODEL_SHEET_MAP[key] : raw;
+}
+
+function joinForSheet(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .join("、");
+}
+
+function buildQuotationFileName() {
+  const f = getEditedFields();
+
+  const contact = (f.contact || "").trim();
+  const model = (f.model || "").trim();
+  const srNumber = (f.srNumber || "").trim();
+
+  if (!contact && !model && !srNumber) return "";
+
+  // 報價單檔名格式：門市名稱_報修設備-SR單號.pdf
+  // 例如：新竹東光 - 智取店_標籤機SBARCO(含裁刀)-3965826.pdf
+  const sheetModel = getSheetModel(model);
+
+  const baseName = [
+    contact,
+    sheetModel && srNumber ? `${sheetModel}-${srNumber}` : sheetModel || srNumber
+  ]
+    .filter(Boolean)
+    .join("_");
+
+  return baseName ? `${baseName}.pdf` : "";
+}
+
+function buildGoogleSheetRows() {
+  const f = getEditedFields();
+
+  // Google Sheet 從 C 欄開始：
+  // C SR單號
+  // D 填寫日期
+  // E 保留空白
+  // F 門市名稱
+  // G 報修設備
+  // H 設備序號
+  // I 故障原因
+  // J 廠商檢測回覆
+  // K 收費方式（預設：耗材收費）
+  // L 更換零件料號
+  // M 更換零件品名
+  // N 更換零件數量
+  // O 未稅報價
+  //
+  // 每一個零件各自一列；共同欄位會在每一列重複。
+
+  const parts = String(f.partNumbers || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const names = String(f.products || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const quantities = String(f.quantities || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const prices = String(f.unitPrices || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+  const rowCount = Math.max(parts.length, names.length, quantities.length, prices.length, 1);
+  const rows = [];
+
+  for (let i = 0; i < rowCount; i++) {
+    const row = [
+      f.caseNumber,
+      f.srNumber,
+      f.fillDate,
+      "",
+      f.contact,
+      getSheetModel(f.model),
+      f.serial,
+      f.problem,
+      f.inspection,
+      f.feeType || "耗材收費",
+      parts[i] || "",
+      names[i] || "",
+      quantities[i] || "",
+      prices[i] || ""
+    ];
+
+    rows.push(
+      row
+        .map(value => String(value ?? "")
+          .replace(/\t/g, " ")
+          .replace(/\r?\n/g, " "))
+        .join("\t")
+    );
+  }
+
+  return rows;
+}
+
+function buildGoogleSheetPreview() {
+  return buildGoogleSheetRows().join("\n");
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -158,416 +314,323 @@ function sectionBetween(text, starts, ends) {
 function parseQuotation(text) {
   const normalized = normalizeText(text);
   const fields = emptyFields();
+  const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
 
-  /*
-   * 1. 聯絡人
-   *
-   * PDF 有可能變成：
-   * 聯絡人 : 羅東中山二 - 智取店報價日期 : 2026-10-01
-   *
-   * 也可能變成：
-   * 聯絡人 : 羅東中山二 - 智取店
-   * 報價日期 : 2026-10-01
-   *
-   * 所以直接抓「聯絡人」到「報價日期」之前，
-   * 不要求中間一定有空白或換行。
-   */
+  // 1. 門市名稱
   fields.contact = firstMatch(normalized, [
-    /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i
+    /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
+    /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
   ]);
 
-  /*
-   * 如果上面仍抓不到，再從聯絡人後面抓，
-   * 並把報價日期切掉。
-   */
-  if (!fields.contact) {
-    const contactMatch = normalized.match(
-      /聯絡人\s*[:：]?\s*(.{1,50}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
-    );
-
-    if (contactMatch) {
-      fields.contact = cleanValue(contactMatch[1]);
-    }
-  }
-
-  /*
-   * 2. SR單號
-   */
+  // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
     /SR\s*單號\s*[:：]?\s*([0-9]+)/i,
     /SR單號\s*[:：]?\s*([A-Z0-9-]+)/i
   ]);
 
-  /*
-   * 3. 機器型號
-   *
-   * 直接找 PA 開頭的型號。
-   * 例如 PA768-QA6FRMDG.
-   * → PA768
-   */
-  const modelMatch = normalized.match(
-    /\b(PA\d+)-[A-Z0-9.-]+/i
+  // 3. 案件編號 + 原始報修設備
+  const repairMatch = normalized.match(
+    /客戶維修單號\s*[:：]?\s*(.*?)\s*-\s*(RR[A-Z0-9-]+)/i
   );
-
-  if (modelMatch) {
-    fields.model = modelMatch[1];
+  if (repairMatch) {
+    const repairPrefix = cleanValue(repairMatch[1]);
+    fields.caseNumber = repairMatch[2];
+    fields.model = repairPrefix;
   }
 
-  // 其他設備型號通常會出現在「客戶維修單號：型號-RR...」中。
+  if (!fields.caseNumber) {
+    const rrMatch = normalized.match(/\b(RR\d{6,})\b/i);
+    if (rrMatch) fields.caseNumber = rrMatch[1];
+  }
+
   if (!fields.model) {
-    const repairModel = normalized.match(
-      /客戶維修單號\s*[:：]?\s*([A-Za-z][A-Za-z0-9()_ -]*?)\s*-\s*RR\d+/i
-    );
-    if (repairModel) fields.model = cleanValue(repairModel[1]);
+    const modelMatch = normalized.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-700|Sewoo|SBarco(?:\(含裁刀\))?|ZD230|DA210|TSC\s+ALPHA-40L)\b/i);
+    if (modelMatch) fields.model = cleanValue(modelMatch[1]);
   }
 
-  /*
-   * 4. 序號
-   *
-   * 這份 PDF 的序號格式是：
-   * UTA21520240227
-   *
-   * 不再要求它一定要緊跟在機器品號後面。
-   * 這樣可以避免 PDF 表格排序造成抓不到。
-   */
-  const serialMatch = normalized.match(
-    /\b(UTA[A-Z0-9]{6,})\b/i
+  // 4. 找「機器品號 / 序號」表格列。
+  // PDF.js / pdftotext 可能有兩種排列：
+  // A.「1 機器品號 故障原因 檢測說明」+ 下一行序號
+  // B.「1」→下一行機器品號→下一行序號→再下一行故障原因
+  const machineHeaderIndex = lines.findIndex(line =>
+    /機\s*器\s*品\s*號\s*\/\s*序\s*號/i.test(line)
   );
 
-  if (serialMatch) {
-    fields.serial = serialMatch[1];
-  }
+  let serialIndex = -1;
+  let issueBlock = "";
 
-  /*
-   * 如果未來遇到不是 UTA 開頭的序號，
-   * 再使用 PA 型號後面的第二組英數字作備援。
-   */
-  if (!fields.serial) {
-    const machineMatch = normalized.match(
-      /機器品號[^\n]*\n\s*\d+\s*\n?\s*[A-Z0-9.-]+\s*\n\s*([A-Z0-9][A-Z0-9._-]{5,})\b/i
+  if (machineHeaderIndex >= 0) {
+    const repairLineIndex = lines.findIndex((line, i) =>
+      i > machineHeaderIndex && /客戶維修單號/i.test(line)
     );
+    const endIndex = repairLineIndex >= 0 ? repairLineIndex : Math.min(lines.length, machineHeaderIndex + 12);
 
-    if (machineMatch) {
-      fields.serial = machineMatch[1];
-    }
-  }
+    for (let i = machineHeaderIndex + 1; i < endIndex; i++) {
+      let line = lines[i].trim();
+      if (!line) continue;
 
-  /*
-   * 5. 客戶維修單號
-   *
-   * PDF：
-   * 客戶維修單號：PA768-RR2606250146
-   *
-   * 只要：
-   * RR2606250146
-   */
-  fields.customerRepairNo = firstMatch(normalized, [
-    /客戶維修單號\s*[:：]?\s*[A-Z0-9]+\s*-\s*(RR[A-Z0-9-]+)/i
-  ]);
+      // 找第一個資料列的編號，例如「1 PA760-...」或單獨的「1」。
+      if (!/^\d+\s*(?:$|\s)/.test(line)) continue;
 
-  /*
-   * 備援：
-   * 直接找文件裡的 RR 開頭流水號。
-   */
-  if (!fields.customerRepairNo) {
-    const rrMatch = normalized.match(
-      /\b(RR\d{6,})\b/i
-    );
+      line = line.replace(/^\d+\s*/, "").trim();
+      if (!line) continue;
 
-    if (rrMatch) {
-      fields.customerRepairNo = rrMatch[1];
-    }
-  }
+      // 若機器品號單獨一行，下一行就是序號，再下一行才是故障內容。
+      const firstToken = line.split(/\s+/)[0];
+      const looksLikeMachineCode =
+        /^(?:PA\d+|MS\d+|RP-?\d+|ZD\d+|DA\d+|TSC|Sewoo|SBarco|[A-Z0-9]+(?:-[A-Z0-9]+){2,})/i.test(firstToken);
 
-  /*
-   * 6. 故障現象 / 檢測說明
-   *
-   * 這份 PDF 的表格實際內容：
-   *
-   * PA768-QA6FRMDG.
-   * UTA21520240227
-   * 9/29 側邊全部按鈕可以使用，但螢幕無法滑動與點擊。
-   * 1.上蓋邊框多處凹陷損傷 2.電池不良 報價更換
-   *
-   * 因為 PDF.js 可能改變換行，
-   * 不再依賴「故障現象」和「檢測說明」的位置。
-   *
-   * 改成：
-   * 先找到序號
-   * → 往後找第一個「1.」
-   * → 1. 前面 = 故障現象
-   * → 1. 開始 = 檢測說明
-   */
+      if (!looksLikeMachineCode) continue;
 
-  if (fields.serial) {
-    const serialIndex = normalized.indexOf(fields.serial);
+      // 移除機器品號後，剩下的就是同一列中的故障/檢測文字。
+      const rest = line.slice(firstToken.length).trim();
 
-    if (serialIndex >= 0) {
-      let afterSerial = normalized.slice(
-        serialIndex + fields.serial.length
-      );
+      let serialRemainder = "";
+      for (let j = i + 1; j < endIndex; j++) {
+        const candidate = lines[j].trim();
+        if (!candidate) continue;
 
-      /*
-       * 停在「客戶維修單號」以前，
-       * 避免抓到下面的其他文字。
-       */
-      const repairIndex = afterSerial.search(
-        /客戶維修單號/i
-      );
-
-      if (repairIndex >= 0) {
-        afterSerial = afterSerial.slice(0, repairIndex);
-      }
-
-      afterSerial = afterSerial.trim();
-
-      /*
-       * 找檢測說明的第一個「1.」
-       *
-       * 支援：
-       * 1.上蓋
-       * 1. 上蓋
-       * 空白或換行後的 1.
-       */
-      const inspectionMatch = afterSerial.match(
-        /(?:^|\s)(1\.\s*)/
-      );
-
-      if (inspectionMatch) {
-        const inspectionIndex = inspectionMatch.index;
-
-        /*
-         * 如果 match 從空白開始，
-         * 把真正的「1.」位置算出來。
-         */
-        let startIndex = inspectionIndex;
-
-        if (afterSerial[startIndex] !== "1") {
-          startIndex += afterSerial
-            .slice(startIndex)
-            .indexOf("1");
+        const serialCandidate = candidate.match(/^([A-Z0-9][A-Z0-9._-]{7,})(?:\s+(.+))?$/i);
+        if (serialCandidate) {
+          fields.serial = serialCandidate[1];
+          serialRemainder = cleanValue(serialCandidate[2] || "");
+          serialIndex = j;
+          break;
         }
 
-        fields.problem = cleanSingleLine(
-         afterSerial.slice(0, startIndex)
-       );
-
-        fields.inspection = cleanSingleLine(
-         afterSerial.slice(startIndex)
-       );
-      } else {
-        /*
-         * 沒有找到 1. 時，
-         * 整段先放故障現象。
-         */
-        fields.problem = cleanValue(afterSerial);
+        // 若下一行不是序號，最多再往後找幾行。
+        if (j > i + 3) break;
       }
+
+      // 同一行已經有故障內容（格式 A）。
+      const issueParts = [];
+      if (rest && serialRemainder && /\s1\.\s*/.test(rest)) {
+        const marker = rest.search(/\s1\.\s*/);
+        const problemPart = rest.slice(0, marker).trim();
+        const inspectionPart = rest.slice(marker).trim();
+
+        // 若序號後的文字本身也包含「1.」，代表 PDF 把「故障現象續行」
+        // 與「檢測說明」一起放在序號同一行；先在序號後文字內再切一次。
+        if (serialRemainder && /(?:^|\s)1\./.test(serialRemainder)) {
+          const serialMarker = serialRemainder.search(/(?:^|\s)1\./);
+          const serialProblemTail = serialRemainder.slice(0, serialMarker).trim();
+          const serialInspectionTail = serialRemainder.slice(serialMarker).trim();
+
+          issueParts.push(problemPart + (serialProblemTail ? " " + serialProblemTail : ""));
+          issueParts.push(
+            inspectionPart + (serialInspectionTail ? " " + serialInspectionTail : "")
+          );
+        } else {
+          // 如果序號後文字沒有再次出現「1.」，要判斷它是「故障現象續行」
+          // 還是「檢測說明續行」。PDF 版面常把兩者拆到下一行；
+          // 短小、以標點結尾的片段（例如「良,清潔」）通常是檢測欄續文，
+          // 完整語句（例如「列印出滿版畫面」）則屬於故障欄續文。
+          const looksLikeInspectionContinuation =
+            serialRemainder &&
+            (/^[.,，。:：]/.test(serialRemainder) ||
+            (serialRemainder.length <= 8 && /[,，。:：]/.test(serialRemainder)));
+
+          if (looksLikeInspectionContinuation) {
+            issueParts.push(problemPart);
+            issueParts.push(
+              inspectionPart + " " + serialRemainder
+            );
+          } else {
+            issueParts.push(
+              problemPart + (serialRemainder ? " " + serialRemainder : "")
+            );
+            issueParts.push(inspectionPart);
+          }
+        }
+      } else {
+        if (rest) issueParts.push(rest);
+        if (serialRemainder) issueParts.push(serialRemainder);
+      }
+
+      // 如果序號後還有故障內容（格式 B），收集序號後到維修單號前的文字。
+      // 若同一列已經出現「1.」檢測說明標記，後續換行文字一定屬於
+      // 檢測說明的續行，不能再回頭併進故障現象。
+      const issueStart = serialIndex >= 0 ? serialIndex + 1 : i + 1;
+      const continuationParts = [];
+      for (let j = issueStart; j < endIndex; j++) {
+        const candidate = lines[j].trim();
+        if (!candidate) continue;
+        if (/^\d+\s+/.test(candidate)) break;
+        continuationParts.push(candidate);
+      }
+
+      const restAlreadyHasInspection = rest && /(?:^|\s)1\./.test(rest);
+      if (restAlreadyHasInspection && continuationParts.length) {
+        // 把換行續文直接接在「1.」後面，讓後面的分界邏輯一次處理。
+        issueParts.push(continuationParts.join(" "));
+      } else {
+        issueParts.push(...continuationParts);
+      }
+
+      // 這裡先保留「詞與詞之間的空白」，因為後面要靠空白找故障/檢測分界。
+      issueBlock = issueParts.join(" ")
+        .replace(/\u00a0/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      break;
     }
   }
 
-  /*
-   * 7. 如果上面的表格方式沒有抓到，
-   * 再直接從「9/29」這類日期開始抓故障現象。
-   */
-  if (!fields.problem) {
-    const problemMatch = normalized.match(
-      /\b(9\/\d{1,2}\s+.*?)(?=\s*1\.)/i
-    );
-
-    if (problemMatch) {
-      fields.problem = cleanValue(problemMatch[1]);
-    }
+  // 通用序號備援：不限 UTA，支援 UT、純數字等。
+  if (!fields.serial) {
+    const serialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
+    if (serialMatch) fields.serial = serialMatch[1];
   }
 
-  /*
-   * 8. 如果檢測說明仍然沒有，
-   * 直接抓「1.」到客戶維修單號之前。
-   */
-  if (!fields.inspection) {
-    const inspectionMatch = normalized.match(
-      /(\b1\.\s*.*?)(?=\s*客戶維修單號)/i
-    );
+  // 5. 故障原因 + 廠商檢測回覆
+  // 先處理最可靠的「1.」分隔；沒有編號時，再依常見檢測語句切分。
+  if (issueBlock) {
+    const numbered = issueBlock.match(/^(.*?)(?=\s*1\.\s*)((?:1\.\s*).*)$/);
 
-    if (inspectionMatch) {
-      fields.inspection = cleanValue(
-        inspectionMatch[1]
-      );
-    }
-  }
-
-  /*
-   * 9. 品名
-   */
-  const productNames = [];
-  const partNumbers = [];
-  const unitPrices = [];
-  const quantities = [];
-
-  const lines = normalized
-    .split("\n")
-    .map(x => x.trim())
-    .filter(Boolean);
-
-  for (const line of lines) {
-    const m = line.match(
-      /^\s*\d+\s+(.+?)\s+(EA|PCS|SET|個|件)\s+(\d+)\s+([\d,]+(?:\.\d+)?)\s+[\d,]+(?:\.\d+)?\s*$/i
-    );
-
-    if (!m) continue;
-
-    const left = cleanValue(m[1]);
-    const qty = m[3];
-    const unitPrice = m[4].replace(/,/g, "");
-
-    // 常見報價單：料號會以英文/數字/.- 組成，並可能含空白，例如 BENCH SERVICE.
-    // 若左側包含中文，從第一個中文開始視為品名；否則優先用最後一個句點作為料號結尾。
-    const chineseIndex = left.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
-    let partNumber = "";
-    let name = "";
-
-    if (chineseIndex >= 0) {
-      partNumber = left.slice(0, chineseIndex).trim();
-      name = left.slice(chineseIndex).trim();
+    if (numbered) {
+      fields.problem = cleanIssueText(numbered[1], fields.serial);
+      fields.inspection = cleanIssueText(numbered[2], fields.serial);
     } else {
-      const dotIndex = left.lastIndexOf(".");
-      if (dotIndex >= 0) {
-        partNumber = left.slice(0, dotIndex + 1).trim();
-        name = left.slice(dotIndex + 1).trim();
+      // 例如：
+      // 9/29 列印模糊不清 印表機印字頭斷針
+      // 10/1 觸控不良 螢幕觸控不良，電池膨脹，報價更換
+      const splitAt = issueBlock.search(
+        /\s+(?=(?:螢幕|印表機|裁刀|印字頭|電池).*(?:不良|故障|斷針|磨損|膨脹|無法|正常|報價|清潔|更換))/i
+      );
+
+      if (splitAt > 0) {
+        fields.problem = cleanIssueText(issueBlock.slice(0, splitAt), fields.serial);
+        fields.inspection = cleanIssueText(issueBlock.slice(splitAt), fields.serial);
       } else {
-        // 無法可靠分隔時，保留整段作品名，避免誤刪資料。
-        name = left;
-      }
-    }
-
-    partNumber = partNumber.replace(/\.+$/, "").trim();
-    name = cleanProductName(name);
-
-    if (name && !/^(品名|單位|數量|單價|金額)$/i.test(name)) {
-      partNumbers.push(partNumber);
-      unitPrices.push(Number(unitPrice).toLocaleString("en-US"));
-      quantities.push(qty);
-      productNames.push(name);
-    }
-  }
-
-  // 如果 PDF 將料號拆成獨立一行，補抓常見零件資料。
-  if (productNames.length === 0) {
-    const tableStart = normalized.search(/料\s*號\s+品\s*名/i);
-    if (tableStart >= 0) {
-      const tableText = normalized.slice(tableStart);
-      const candidates = [
-        "上蓋模組", "上蓋組", "玻璃保護貼", "厚電池", "主電池", "庫內維修",
-        "印字頭", "裁刀模組", "滾輪模組", "掀蓋卡榫"
-      ];
-      for (const name of candidates) {
-        if (tableText.includes(name)) productNames.push(name);
+        fields.problem = cleanIssueText(issueBlock, fields.serial);
       }
     }
   }
 
-  fields.partNumbers = [...new Set(partNumbers)].join("\n");
-  fields.unitPrices = unitPrices.join("\n");
+  // 全域備援：即使表格文字排序被打散，也至少抓日期開頭的故障現象。
+  if (!fields.problem) {
+    const m = normalized.match(/\b(\d{1,2}\/\d{1,2}\s+.*?)(?=\s*客戶維修單號)/i);
+    if (m) fields.problem = cleanIssueText(m[1], fields.serial);
+  }
+
+  if (!fields.inspection) {
+    const m = normalized.match(/(\b1\.\s*.*?)(?=\s*客戶維修單號)/i);
+    if (m) fields.inspection = cleanIssueText(m[1], fields.serial);
+  }
+
+  // 全域備援：即使表格欄位順序被 PDF.js 打散，也優先擷取日期開頭的故障現象。
+  if (!fields.problem) {
+    const m = normalized.match(/\b(\d{1,2}\/\d{1,2}\s+.*?)(?=\s*客戶維修單號)/i);
+    if (m) fields.problem = cleanIssueText(m[1], fields.serial);
+  }
+
+  if (!fields.inspection) {
+    const m = normalized.match(/(\b1\.\s*.*?)(?=\s*客戶維修單號)/i);
+    if (m) fields.inspection = cleanIssueText(m[1], fields.serial);
+  }
+
+  // 6. 收費方式：PDF 沒有欄位時固定預設「耗材收費」。
+  fields.feeType = firstMatch(normalized, [
+    /收費方式\s*[:：]?\s*(.*?)(?=更換零件|料號|品名|數量|單價|金額|客戶維修單號|$)/i
+  ]) || "耗材收費";
+
+  // 7. 產品表：以「No. 料號 品名」到「合計」之間為唯一解析範圍。
+  const productStart = lines.findIndex(line => /No\.\s*料\s*號\s*品\s*名/i.test(line));
+  const productEnd = productStart >= 0
+    ? (() => {
+        const idx = lines.slice(productStart + 1).findIndex(line => /^合計\s*[:：]?/i.test(line));
+        return idx >= 0 ? productStart + 1 + idx : lines.length;
+      })()
+    : -1;
+
+  const partNumbers = [];
+  const productNames = [];
+  const quantities = [];
+  const unitPrices = [];
+
+  if (productStart >= 0) {
+    let buffer = "";
+
+    for (let i = productStart + 1; i < productEnd; i++) {
+      const line = lines[i];
+      if (!line || /^No\.\s*料\s*號/i.test(line)) continue;
+
+      // 新的一筆產品列開始。
+      if (/^\d+\s+/.test(line)) {
+        if (buffer) {
+          parseProductBuffer(buffer, partNumbers, productNames, quantities, unitPrices);
+        }
+        buffer = line;
+      } else if (buffer) {
+        // PDF 常把料號最後一個字母拆到下一行，例如：
+        // 84-T400-017-003.SR
+        // P
+        // 印字頭...
+        // 這裡要把 P 接回料號，而不是接到金額後面。
+        if (/^[A-Z0-9]{1,3}$/.test(line) && /\.[A-Z]{2}\s+[\u3400-\u4dbf\u4e00-\u9fff]/i.test(buffer)) {
+          buffer = buffer.replace(/(\.[A-Z]{2})(?=\s+[\u3400-\u4dbf\u4e00-\u9fff])/i, `$1${line}`);
+        } else {
+          // 其他拆行內容才接到目前產品列尾端。
+          buffer += " " + line;
+        }
+      }
+    }
+
+    if (buffer) {
+      parseProductBuffer(buffer, partNumbers, productNames, quantities, unitPrices);
+    }
+  }
+
+  fields.partNumbers = partNumbers.join("\n");
+  fields.products = productNames.join("\n");
   fields.quantities = quantities.join("\n");
-  fields.products = [...new Set(productNames)].join("\n");
+  fields.unitPrices = unitPrices.join("\n");
 
   return fields;
 }
 
+function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitPrices) {
+  const text = cleanValue(buffer).replace(/\s+/g, " ").replace(/(\.[A-Z]{2})\s+([A-Z])\b/gi, "$1$2");
 
-const MODEL_MAP = {
-  "MS838": "有線掃碼槍MS838",
-  "MS842": "無線掃瑪槍MS842P",
-  "MS852": "無線掃碼槍MS852P",
-  "RP-700": "熱感應機RP-700",
-  "Sewoo": "熱感應機Sewoo",
-  "SBarco": "標籤機SBarco",
-  "SBarco(含裁刀)": "標籤機SBarco(含裁刀)",
-  "ZD230": "標籤機ZD230",
-  "PA760": "PDA(PA760)",
-  "PA768": "PDA(PA768)",
-  "PA760槍把": "PDA槍把(PA760)",
-  "PA768槍把": "PDA槍把(PA768)",
-  "DA210": "藍芽標籤機DA210",
-  "TSC ALPHA-40L": "攜帶式藍芽標籤機TSC ALPHA-40L"
-};
+  // 從右側固定抓：單位、數量、單價、金額；前面才是料號與品名。
+  const m = text.match(
+    /^\s*\d+\s+(.+)\s+(EA|PCS|SET|個|件)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s*$/i
+  );
 
-function mapDeviceName(model) {
-  const key = String(model || "").trim();
-  return MODEL_MAP[key] || key;
-}
+  if (!m) return;
 
-function getUploadDate() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-}
+  let beforeUnit = cleanValue(m[1]);
+  let name = "";
 
-function buildQuotationFileName() {
-  const f = getEditedFields();
-  const contact = (f.contact || "").trim();
-  const model = (f.model || "").trim();
-  const sr = (f.srNumber || "").trim();
-  const modelText = mapDeviceName(model);
-  const base = [contact, modelText && sr ? `${modelText}-${sr}` : (modelText || sr)].filter(Boolean).join("_");
-  return base ? `${base}.pdf` : "";
-}
-
-function updateQuotationFileName() {
-  const el = $("quotationFileName");
-  if (el) el.textContent = buildQuotationFileName() || "—";
-  updateGoogleSheetPreview();
-}
-
-async function copyFileName() {
-  const name = buildQuotationFileName();
-  if (!name) { showToast("目前沒有可複製的報價單檔名"); return; }
-  try { await navigator.clipboard.writeText(name); }
-  catch { const t=document.createElement("textarea"); t.value=name; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
-  showToast("已複製報價單檔名");
-}
-
-function buildGoogleSheetRows() {
-  const f = getEditedFields();
-  const parts = (f.partNumbers || "").split(/\n+/).map(x=>x.trim()).filter(Boolean);
-  const names = (f.products || "").split(/\n+/).map(x=>x.trim()).filter(Boolean);
-  const qtys = (f.quantities || "").split(/\n+/).map(x=>x.trim()).filter(Boolean);
-  const prices = (f.unitPrices || "").split(/\n+/).map(x=>x.trim()).filter(Boolean);
-  const count = Math.max(parts.length, names.length, qtys.length, prices.length, 1);
-  const rows = [];
-  for (let i=0;i<count;i++) {
-    rows.push([
-      f.customerRepairNo || "",
-      f.srNumber || "",
-      getUploadDate(),
-      "",
-      f.contact || "",
-      mapDeviceName(f.model),
-      f.serial || "",
-      f.problem || "",
-      f.inspection || "",
-      "耗材收費",
-      parts[i] || "",
-      names[i] || "",
-      qtys[i] || "1",
-      prices[i] || ""
-    ]);
+  // 料號與品名通常以第一個中文字為分界。
+  // 這可以正確處理：
+  // 84-T400-017-003.SR P 印字頭
+  // BENCH SERVICE. 庫內維修
+  const chineseIndex = beforeUnit.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
+  if (chineseIndex >= 0) {
+    const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
+    const possibleName = beforeUnit.slice(chineseIndex).trim();
+    if (possiblePart) {
+      beforeUnit = possiblePart;
+      name = possibleName;
+    }
   }
-  return rows;
-}
 
-function updateGoogleSheetPreview() {
-  const el = $("googleSheetPreview");
-  if (!el) return;
-  const rows = buildGoogleSheetRows();
-  el.textContent = rows.map(r => r.join("\t")).join("\n") || "—";
-}
+  // PDF 可能把 .SRP 拆成「.SR P」，合併回正確料號。
+  let partNumber = beforeUnit
+    .replace(/(\.[A-Z]{2})\s+([A-Z])$/i, "$1$2")
+    .replace(/\.+$/, "")
+    .trim();
 
-async function copyResult() {
-  const rows = buildGoogleSheetRows();
-  const text = rows.map(r => r.join("\t")).join("\n");
-  if (!text) { showToast("目前沒有可複製的結果"); return; }
-  try { await navigator.clipboard.writeText(text); }
-  catch { const t=document.createElement("textarea"); t.value=text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); }
-  showToast("已複製 Google Sheet 貼上資料");
+  name = cleanProductName(name);
+
+  if (!partNumber || !name) return;
+  if (/^(品名|單位|數量|單價|金額)$/i.test(name)) return;
+
+  partNumbers.push(partNumber);
+  productNames.push(name);
+  quantities.push(m[3].trim());
+  unitPrices.push(Number(m[4].replace(/,/g, "")).toLocaleString("en-US"));
 }
 
 function renderFields() {
@@ -602,12 +665,16 @@ if (def.type === "textarea") {
     el.addEventListener("input", () => {
       state.fields[def.key] = el.value;
       updateQuotationFileName();
+      updateGoogleSheetPreview();
     });
 
     row.appendChild(label);
     row.appendChild(el);
     container.appendChild(row);
   }
+
+  updateQuotationFileName();
+  updateGoogleSheetPreview();
 }
 
 function getEditedFields() {
@@ -618,38 +685,65 @@ function getEditedFields() {
   return result;
 }
 
+function updateQuotationFileName() {
+  const fileName = buildQuotationFileName();
+
+  const el = $("quotationFileName");
+  if (el) el.textContent = fileName || "—";
+
+  // 上方工具列的檔名也使用「修改後」的報價單檔名，
+  // 讓「複製報價單檔名」複製的內容與紅框顯示完全一致。
+  const toolbarFileName = $("fileName");
+  if (toolbarFileName && fileName) {
+    toolbarFileName.textContent = fileName;
+  }
+}
+
+function updateGoogleSheetPreview() {
+  const el = $("googleSheetPreview");
+  if (!el) return;
+  el.textContent = buildGoogleSheetPreview() || "—";
+}
+
 function buildResultText() {
   const f = getEditedFields();
 
   return [
-    `聯絡人：${f.contact}`,
     `SR單號：${f.srNumber}`,
-    `機器型號：${f.model}`,
-    `序號：${f.serial}`,
-    `客戶維修單號：${f.customerRepairNo}`,
+    `填寫日期：${f.fillDate}`,
+    `門市名稱：${f.contact}`,
+    `報修設備：${f.model}`,
+    `設備序號：${f.serial}`,
+    `案件編號：${f.caseNumber}`,
     "",
-    "故障現象：",
+    "故障原因：",
     f.problem,
     "",
-    "檢測說明：",
+    "廠商檢測回覆：",
     f.inspection,
     "",
-    "品名：",
-    f.products
+    `收費方式：${f.feeType}`,
+    "更換零件：",
+    ...buildGoogleSheetRows().map(row => {
+      const cells = row.split("\t");
+      return [cells[9], cells[10], cells[11], cells[12]].join(" | ");
+    }),
+    "",
+    `報價單檔名：${buildQuotationFileName()}`
   ].join("\n").trim();
 }
 
 async function copyResult() {
-  const text = buildResultText();
+  const text = buildGoogleSheetPreview();
 
-  if (!text) {
+  if (!text.replace(/[\t\r\n]/g, "").trim()) {
     showToast("目前沒有可複製的結果");
     return;
   }
 
   try {
     await navigator.clipboard.writeText(text);
-    showToast("已複製判讀結果");
+    showToast("已複製，可從 Google Sheet 的 B 欄直接貼上");
   } catch (error) {
     const textarea = document.createElement("textarea");
     textarea.value = text;
@@ -657,35 +751,31 @@ async function copyResult() {
     textarea.select();
     document.execCommand("copy");
     textarea.remove();
-    showToast("已複製判讀結果");
+    showToast("已複製，可從 Google Sheet 的 B 欄直接貼上");
   }
 }
 
-function downloadResult() {
-  const text = buildResultText();
-  if (!text) {
-    showToast("目前沒有可下載的結果");
+
+async function copyQuotationFileName() {
+  const fileName = buildQuotationFileName();
+
+  if (!fileName) {
+    showToast("目前沒有可複製的報價單檔名");
     return;
   }
 
-  const fileBase = state.currentFile
-    ? state.currentFile.name.replace(/\.pdf$/i, "")
-    : "PDF判讀結果";
-
-  const blob = new Blob(["\ufeff", text], {
-    type: "text/plain;charset=utf-8"
-  });
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${fileBase}_判讀結果.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  showToast("TXT 已下載");
+  try {
+    await navigator.clipboard.writeText(fileName);
+    showToast("已複製報價單檔名");
+  } catch (error) {
+    const textarea = document.createElement("textarea");
+    textarea.value = fileName;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+    showToast("已複製報價單檔名");
+  }
 }
 
 async function loadPdfJs() {
@@ -800,6 +890,7 @@ async function processFile(file) {
 
   state.currentFile = file;
   state.fields = emptyFields();
+  state.fields.fillDate = formatUploadDate(new Date());
   state.rawText = "";
   state.ocrUsed = false;
 
@@ -835,6 +926,7 @@ async function processFile(file) {
 
     state.rawText = text;
     state.fields = parseQuotation(text);
+    state.fields.fillDate = formatUploadDate(new Date());
 
     renderFields();
     updateQuotationFileName();
@@ -913,8 +1005,8 @@ function clearAll() {
   $("workspace").classList.add("hidden");
   $("batchCard").classList.add("hidden");
   $("resultFields").innerHTML = "";
-  if ($("quotationFileName")) $("quotationFileName").textContent = "—";
-  if ($("googleSheetPreview")) $("googleSheetPreview").textContent = "—";
+  $("quotationFileName").textContent = "—";
+  $("googleSheetPreview").textContent = "—";
   $("rawText").textContent = "";
   $("confidenceBadge").textContent = "待判讀";
   $("fileList").innerHTML = "";
@@ -951,9 +1043,7 @@ $("dropZone").addEventListener("drop", event => {
 });
 
 $("copyBtn").addEventListener("click", copyResult);
-if ($("copyFileNameBtn")) $("copyFileNameBtn").addEventListener("click", copyFileName);
-if ($("copyRawTextBtn")) $("copyRawTextBtn").addEventListener("click", async () => { try { await navigator.clipboard.writeText(state.rawText || ""); showToast("已複製目前 PDF 原始文字"); } catch(e) { showToast("複製失敗"); } });
-if ($("parseManualTextBtn")) $("parseManualTextBtn").addEventListener("click", () => { const t=$("manualPdfText").value.trim(); if(!t){showToast("請先貼上 PDF 文字");return;} state.rawText=normalizeText(t); state.fields=parseQuotation(state.rawText); renderFields(); updateQuotationFileName(); $("rawText").textContent=state.rawText; showToast("已用貼上內容重新判讀"); });
+$("copyFileNameBtn").addEventListener("click", copyQuotationFileName);
 $("clearBtn").addEventListener("click", clearAll);
 
 $("prevPageBtn").addEventListener("click", () => {
