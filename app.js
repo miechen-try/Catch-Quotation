@@ -43,7 +43,9 @@ const state = {
   currentFile: null,
   fields: emptyFields(),
   rawText: "",
-  ocrUsed: false
+  ocrUsed: false,
+  originalFields: emptyFields(),
+  updated: false
 };
 
 function emptyFields() {
@@ -322,16 +324,40 @@ function sectionBetween(text, starts, ends) {
   return cleanValue(m?.[1] || "");
 }
 
+function isLikelyStoreName(value) {
+  const v = cleanSingleLine(value);
+  if (!v) return false;
+
+  // 明顯是地址、電話、公司/人員資訊時，不當作門市名稱。
+  if (/[縣市區鄉鎮路街巷弄號樓室段村里鄰|市話|電話]/.test(v)) return false;
+  if (/(?:先生|小姐|女士|先生小姐|聯絡人|承辦|收件人)/.test(v)) return false;
+  if (/(?:@|\b09\d{8}\b|\b0\d{1,2}-\d{6,8}\b)/.test(v)) return false;
+  if (/\b\d{3,}\b/.test(v) && !/智取店|門市|店/.test(v)) return false;
+
+  // 純 2~4 個中文字、沒有店家關鍵字，通常是人名；避免把它帶進判讀結果。
+  const compact = v.replace(/[\s·•・]/g, '');
+  if (/^[\u3400-\u4dbf\u4e00-\u9fff]{2,4}$/.test(compact) && !/(?:店|門市|分店|據點|智取)/.test(compact)) {
+    return false;
+  }
+
+  return true;
+}
+
+function sanitizeContact(value) {
+  const v = cleanSingleLine(value);
+  return isLikelyStoreName(v) ? v : '';
+}
+
 function parseQuotation(text) {
   const normalized = normalizeText(text);
   const fields = emptyFields();
   const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
 
   // 1. 門市名稱
-  fields.contact = firstMatch(normalized, [
+  fields.contact = sanitizeContact(firstMatch(normalized, [
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
-  ]);
+  ]));
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
@@ -675,8 +701,8 @@ if (def.type === "textarea") {
 
     el.addEventListener("input", () => {
       state.fields[def.key] = el.value;
-      updateQuotationFileName();
-      updateGoogleSheetPreview();
+      row.classList.remove("field-updated");
+      state.updated = false;
     });
 
     row.appendChild(label);
@@ -686,6 +712,32 @@ if (def.type === "textarea") {
 
   updateQuotationFileName();
   updateGoogleSheetPreview();
+}
+
+function updateData() {
+  const edited = getEditedFields();
+  const changedKeys = [];
+
+  for (const def of FIELD_DEFS) {
+    const before = String(state.originalFields[def.key] || '').trim();
+    const after = String(edited[def.key] || '').trim();
+    if (before !== after) changedKeys.push(def.key);
+  }
+
+  state.fields = { ...edited };
+  state.updated = true;
+
+  for (const def of FIELD_DEFS) {
+    const row = document.querySelector(`#field-${def.key}`)?.closest('.field-row');
+    if (row) row.classList.toggle('field-updated', changedKeys.includes(def.key));
+  }
+
+  updateQuotationFileName();
+  updateGoogleSheetPreview();
+
+  const filled = FIELD_DEFS.filter(d => String(state.fields[d.key] || '').trim()).length;
+  $("confidenceBadge").textContent = `已更新・${filled}/${FIELD_DEFS.length} 欄位`;
+  showToast(changedKeys.length ? `資料已更新，${changedKeys.length} 個欄位已標示` : '資料已更新，沒有欄位變更');
 }
 
 function getEditedFields() {
@@ -1008,6 +1060,8 @@ function clearAll() {
   state.pdfDoc = null;
   state.currentFile = null;
   state.fields = emptyFields();
+  state.originalFields = emptyFields();
+  state.updated = false;
   state.rawText = "";
   state.ocrUsed = false;
 
@@ -1054,6 +1108,7 @@ $("dropZone").addEventListener("drop", event => {
 });
 
 $("copyBtn").addEventListener("click", copyResult);
+$("updateBtn").addEventListener("click", updateData);
 $("copyFileNameBtn").addEventListener("click", copyQuotationFileName);
 $("clearBtn").addEventListener("click", clearAll);
 

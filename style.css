@@ -120,6 +120,12 @@ button, input, textarea {
 }
 
 .secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1.2;
+  vertical-align: middle;
   background: #34A853;
   color: #FFFFFF;
   padding: 9px 14px;
@@ -135,7 +141,7 @@ button, input, textarea {
   padding: 4px;
   margin-right: 4px;
   box-sizing: border-box;
-  vertical-align: -6px;
+  vertical-align: middle;
   border-radius: 3px;
   background: #FFFFFF;
 }
@@ -144,6 +150,25 @@ button, input, textarea {
   display: block;
   border: 1px solid #34A853;
   background: #FFFFFF;
+}
+
+.update-btn {
+  background: #FFFFFF;
+  color: #D32F2F;
+  border: 1px solid #D32F2F;
+}
+
+.update-btn:hover {
+  background: #FFF5F5;
+  color: #B71C1C;
+}
+
+.field-updated {
+  background: #fff1f1;
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-left: -8px;
+  margin-right: -8px;
 }
 
 .secondary-btn:hover {
