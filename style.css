@@ -120,14 +120,34 @@ button, input, textarea {
 }
 
 .secondary-btn {
-  background: #eef3f7;
-  color: #33414c;
+  background: #34A853;
+  color: #FFFFFF;
   padding: 9px 14px;
   font-weight: 600;
 }
 
+.google-sheet-icon {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 3px);
+  gap: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 4px;
+  margin-right: 4px;
+  box-sizing: border-box;
+  vertical-align: -6px;
+  border-radius: 3px;
+  background: #FFFFFF;
+}
+
+.google-sheet-icon span {
+  display: block;
+  border: 1px solid #34A853;
+  background: #FFFFFF;
+}
+
 .secondary-btn:hover {
-  background: #e3ebf1;
+  background: #2E8B47;
 }
 
 .danger-btn {
