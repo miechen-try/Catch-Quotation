@@ -778,6 +778,57 @@ async function copyQuotationFileName() {
   }
 }
 
+async function copyRawPdfText() {
+  const text = state.rawText || "";
+  if (!text.trim()) {
+    showToast("目前沒有可複製的 PDF 文字");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+  showToast("已複製目前 PDF 文字，可貼到判讀欄位或手動補抓區");
+}
+
+function parseManualPdfText() {
+  const text = $("manualPdfText")?.value || "";
+  if (!text.trim()) {
+    showToast("請先貼上 PDF 內容");
+    return;
+  }
+
+  state.rawText = text;
+  state.ocrUsed = false;
+
+  const parsed = parseQuotation(text);
+  const current = getEditedFields();
+
+  // 只用「貼上內容成功判讀出的值」覆蓋；沒有判讀出的欄位保留原本人工資料。
+  for (const def of FIELD_DEFS) {
+    const value = parsed[def.key];
+    if (String(value || "").trim()) {
+      current[def.key] = value;
+    }
+  }
+
+  state.fields = { ...state.fields, ...current };
+  renderFields();
+  $("rawText").textContent = text;
+
+  const filled = FIELD_DEFS.filter(d => state.fields[d.key]?.trim()).length;
+  $("confidenceBadge").textContent = `手動貼上判讀・${filled}/${FIELD_DEFS.length} 欄位`;
+  setStatus("已套用貼上內容");
+  showToast(`已重新判讀並套用：${filled}/${FIELD_DEFS.length} 個欄位有資料`);
+}
+
 async function loadPdfJs() {
   if (state.pdfjs) return state.pdfjs;
 
@@ -813,6 +864,47 @@ async function extractPdfText(pdf) {
   return normalizeText(allText);
 }
 
+async function renderPdfTextLayer(page, viewport) {
+  const layer = $("pdfTextLayer");
+  const wrap = $("pdfPageWrap");
+  if (!layer || !wrap) return;
+
+  layer.innerHTML = "";
+  wrap.style.width = `${viewport.width}px`;
+  wrap.style.height = `${viewport.height}px`;
+  layer.style.width = `${viewport.width}px`;
+  layer.style.height = `${viewport.height}px`;
+
+  const content = await page.getTextContent();
+  const util = state.pdfjs?.Util;
+
+  for (const item of content.items) {
+    if (!item.str) continue;
+
+    const span = document.createElement("span");
+    span.textContent = item.str;
+
+    let tx;
+    if (util?.transform) {
+      tx = util.transform(viewport.transform, item.transform);
+    } else {
+      tx = item.transform;
+    }
+
+    const fontHeight = Math.max(1, Math.hypot(tx[2], tx[3]));
+    const angle = Math.atan2(tx[1], tx[0]);
+    const scaleX = Math.max(0.01, Math.hypot(tx[0], tx[1]) / fontHeight);
+
+    span.style.left = `${tx[4]}px`;
+    span.style.top = `${tx[5] - fontHeight}px`;
+    span.style.fontSize = `${fontHeight}px`;
+    span.style.lineHeight = `${fontHeight}px`;
+    span.style.transform = `rotate(${angle}rad) scaleX(${scaleX})`;
+
+    layer.appendChild(span);
+  }
+}
+
 async function renderPage(pageNo) {
   if (!state.pdfDoc) return;
 
@@ -832,6 +924,8 @@ async function renderPage(pageNo) {
     canvasContext: context,
     viewport
   }).promise;
+
+  await renderPdfTextLayer(page, viewport);
 
   $("pageLabel").textContent =
     `第 ${state.currentPage} / ${state.pdfDoc.numPages} 頁`;
@@ -1005,6 +1099,10 @@ function clearAll() {
   $("workspace").classList.add("hidden");
   $("batchCard").classList.add("hidden");
   $("resultFields").innerHTML = "";
+  $("pdfTextLayer").innerHTML = "";
+  $("pdfPageWrap").style.width = "";
+  $("pdfPageWrap").style.height = "";
+  $("manualPdfText").value = "";
   $("quotationFileName").textContent = "—";
   $("googleSheetPreview").textContent = "—";
   $("rawText").textContent = "";
@@ -1044,6 +1142,8 @@ $("dropZone").addEventListener("drop", event => {
 
 $("copyBtn").addEventListener("click", copyResult);
 $("copyFileNameBtn").addEventListener("click", copyQuotationFileName);
+$("copyRawTextBtn").addEventListener("click", copyRawPdfText);
+$("parseManualTextBtn").addEventListener("click", parseManualPdfText);
 $("clearBtn").addEventListener("click", clearAll);
 
 $("prevPageBtn").addEventListener("click", () => {

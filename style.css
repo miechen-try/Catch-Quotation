@@ -249,6 +249,69 @@ button, input, textarea {
   height: auto;
 }
 
+
+.pdf-page-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 1;
+  user-select: text;
+}
+
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  user-select: text;
+  cursor: text;
+}
+
+.pdf-text-layer span {
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0 0;
+  color: transparent;
+  user-select: text;
+}
+
+.pdf-text-layer span::selection {
+  background: rgba(37, 99, 235, .28);
+}
+
+.manual-paste-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0f3;
+}
+
+.manual-paste-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.manual-paste-text {
+  width: 100%;
+  min-height: 130px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px solid #d9e1e7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.manual-paste-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .viewer-empty {
   color: var(--muted);
   padding: 60px 20px;
