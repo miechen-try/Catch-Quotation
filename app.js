@@ -211,9 +211,11 @@ function buildQuotationFileName() {
 
   // 報價單檔名格式：門市名稱_報修設備-SR單號.pdf
   // 例如：新竹東光 - 智取店_標籤機SBARCO(含裁刀)-3965826.pdf
+  const sheetModel = getSheetModel(model);
+
   const baseName = [
     contact,
-    model && srNumber ? `${model}-${srNumber}` : model || srNumber
+    sheetModel && srNumber ? `${sheetModel}-${srNumber}` : sheetModel || srNumber
   ]
     .filter(Boolean)
     .join("_");
@@ -407,14 +409,38 @@ function parseQuotation(text) {
         const problemPart = rest.slice(0, marker).trim();
         const inspectionPart = rest.slice(marker).trim();
 
-        // 若續行以「.」等符號開頭，通常是檢測說明的續行；
-        // 若直接是中文句子，通常是故障現象的續行。
-        if (/^[.,，。:：]/.test(serialRemainder)) {
-          issueParts.push(problemPart);
-          issueParts.push(inspectionPart + " " + serialRemainder);
+        // 若序號後的文字本身也包含「1.」，代表 PDF 把「故障現象續行」
+        // 與「檢測說明」一起放在序號同一行；先在序號後文字內再切一次。
+        if (serialRemainder && /(?:^|\s)1\./.test(serialRemainder)) {
+          const serialMarker = serialRemainder.search(/(?:^|\s)1\./);
+          const serialProblemTail = serialRemainder.slice(0, serialMarker).trim();
+          const serialInspectionTail = serialRemainder.slice(serialMarker).trim();
+
+          issueParts.push(problemPart + (serialProblemTail ? " " + serialProblemTail : ""));
+          issueParts.push(
+            inspectionPart + (serialInspectionTail ? " " + serialInspectionTail : "")
+          );
         } else {
-          issueParts.push(problemPart + " " + serialRemainder);
-          issueParts.push(inspectionPart);
+          // 如果序號後文字沒有再次出現「1.」，要判斷它是「故障現象續行」
+          // 還是「檢測說明續行」。PDF 版面常把兩者拆到下一行；
+          // 短小、以標點結尾的片段（例如「良,清潔」）通常是檢測欄續文，
+          // 完整語句（例如「列印出滿版畫面」）則屬於故障欄續文。
+          const looksLikeInspectionContinuation =
+            serialRemainder &&
+            (/^[.,，。:：]/.test(serialRemainder) ||
+            (serialRemainder.length <= 8 && /[,，。:：]/.test(serialRemainder)));
+
+          if (looksLikeInspectionContinuation) {
+            issueParts.push(problemPart);
+            issueParts.push(
+              inspectionPart + " " + serialRemainder
+            );
+          } else {
+            issueParts.push(
+              problemPart + (serialRemainder ? " " + serialRemainder : "")
+            );
+            issueParts.push(inspectionPart);
+          }
         }
       } else {
         if (rest) issueParts.push(rest);
@@ -422,12 +448,23 @@ function parseQuotation(text) {
       }
 
       // 如果序號後還有故障內容（格式 B），收集序號後到維修單號前的文字。
+      // 若同一列已經出現「1.」檢測說明標記，後續換行文字一定屬於
+      // 檢測說明的續行，不能再回頭併進故障現象。
       const issueStart = serialIndex >= 0 ? serialIndex + 1 : i + 1;
+      const continuationParts = [];
       for (let j = issueStart; j < endIndex; j++) {
         const candidate = lines[j].trim();
         if (!candidate) continue;
         if (/^\d+\s+/.test(candidate)) break;
-        issueParts.push(candidate);
+        continuationParts.push(candidate);
+      }
+
+      const restAlreadyHasInspection = rest && /(?:^|\s)1\./.test(rest);
+      if (restAlreadyHasInspection && continuationParts.length) {
+        // 把換行續文直接接在「1.」後面，讓後面的分界邏輯一次處理。
+        issueParts.push(continuationParts.join(" "));
+      } else {
+        issueParts.push(...continuationParts);
       }
 
       // 這裡先保留「詞與詞之間的空白」，因為後面要靠空白找故障/檢測分界。
