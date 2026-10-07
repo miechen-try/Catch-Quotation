@@ -322,8 +322,12 @@ button, input, textarea {
   display: block;
   background: white;
   box-shadow: 0 2px 12px rgba(0,0,0,.12);
-  max-width: 100%;
+  width: auto;
   height: auto;
+  max-width: none;
+  flex: 0 0 auto;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .viewer-empty {
@@ -607,6 +611,11 @@ button, input, textarea {
 .pdf-viewer {
   cursor: grab;
   overflow: auto;
+  display: block;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .pdf-viewer.is-panning { cursor: grabbing; }
 .pdf-viewer canvas { display: block; margin: 0 auto; }

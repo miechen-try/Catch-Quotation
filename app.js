@@ -1126,31 +1126,68 @@ $("pdfZoomFitBtn").addEventListener("click", async () => {
   await renderPage(state.currentPage);
 });
 
-// PDF 放大後可直接拖曳瀏覽
+// PDF：在固定大小的預覽框內放大、縮小與拖曳移動。
+// Canvas 會以實際 PDF 尺寸渲染，因此放大後不會再被 max-width 壓回原尺寸。
 (() => {
   const viewer = $("pdfViewer");
-  let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  const canvas = $("pdfCanvas");
+  let dragging = false;
+  let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
   viewer.addEventListener("pointerdown", e => {
-    if (e.target !== $("pdfCanvas")) return;
+    if (e.button !== 0 || e.target !== canvas) return;
     dragging = true;
     viewer.classList.add("is-panning");
-    startX = e.clientX; startY = e.clientY;
-    startLeft = viewer.scrollLeft; startTop = viewer.scrollTop;
+    startX = e.clientX;
+    startY = e.clientY;
+    startLeft = viewer.scrollLeft;
+    startTop = viewer.scrollTop;
     viewer.setPointerCapture(e.pointerId);
+    e.preventDefault();
   });
+
   viewer.addEventListener("pointermove", e => {
     if (!dragging) return;
     viewer.scrollLeft = startLeft - (e.clientX - startX);
     viewer.scrollTop = startTop - (e.clientY - startY);
+    e.preventDefault();
   });
+
   const stop = e => {
     if (!dragging) return;
     dragging = false;
     viewer.classList.remove("is-panning");
     try { viewer.releasePointerCapture(e.pointerId); } catch (_) {}
   };
+
   viewer.addEventListener("pointerup", stop);
   viewer.addEventListener("pointercancel", stop);
+  viewer.addEventListener("pointerleave", e => {
+    if (dragging && !viewer.hasPointerCapture(e.pointerId)) stop(e);
+  });
+
+  // 滑鼠滾輪也可縮放；以滑鼠所在位置為縮放中心。
+  viewer.addEventListener("wheel", async e => {
+    if (!state.pdfDoc || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+
+    const oldZoom = state.pdfZoom || 1.45;
+    const direction = e.deltaY < 0 ? 1 : -1;
+    const newZoom = Math.max(0.6, Math.min(3.5, +(oldZoom + direction * 0.12).toFixed(2)));
+    if (newZoom === oldZoom) return;
+
+    const rect = viewer.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left + viewer.scrollLeft;
+    const mouseY = e.clientY - rect.top + viewer.scrollTop;
+    const ratio = newZoom / oldZoom;
+
+    state.pdfZoom = newZoom;
+    $("pdfZoomLabel").textContent = `${Math.round(newZoom * 100)}%`;
+    await renderPage(state.currentPage);
+
+    viewer.scrollLeft = mouseX * ratio - (e.clientX - rect.left);
+    viewer.scrollTop = mouseY * ratio - (e.clientY - rect.top);
+  }, { passive: false });
 })();
 
 $("rawToggleBtn").addEventListener("click", () => {
