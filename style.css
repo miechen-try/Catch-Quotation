@@ -109,7 +109,8 @@ button, input, textarea {
 }
 
 .primary-btn {
-  background: #6f9fc0;
+  /* 選擇 PDF：恢復原本主色 */
+  background: var(--primary);
   color: #ffffff;
   padding: 11px 22px;
   font-weight: 700;
@@ -126,11 +127,22 @@ button, input, textarea {
   gap: 6px;
   line-height: 1.2;
   vertical-align: middle;
-  background: #6fa88a;
+  /* Google 文件色票風格：淺綠色 1；文字固定白色 */
+  background: #93c47d;
   color: #FFFFFF;
   padding: 9px 14px;
   font-weight: 600;
 }
+
+#copyBtn {
+  background: #93c47d;
+  color: #FFFFFF;
+}
+
+#copyBtn:hover {
+  background: #76ad5d;
+}
+
 
 .google-sheet-icon {
   display: inline-grid;
@@ -148,7 +160,7 @@ button, input, textarea {
 
 .google-sheet-icon span {
   display: block;
-  border: 1px solid #6fa88a;
+  border: 1px solid #93c47d;
   background: #FFFFFF;
 }
 
@@ -238,12 +250,13 @@ button, input, textarea {
 }
 
 .filename-btn {
-  background: #6e86a3;
+  /* Google 文件色票：深藍色 3；文字固定白色 */
+  background: #1155cc;
   color: #FFFFFF;
 }
 
 .filename-btn:hover {
-  background: #5c718c;
+  background: #0b3f9e;
   color: #FFFFFF;
 }
 

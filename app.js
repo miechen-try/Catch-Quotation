@@ -1234,6 +1234,18 @@ const MULTI_ROW_FIELDS = new Set([
   "unitPrices"
 ]);
 
+function updateConfidenceBadge() {
+  const confidenceBadge = $("confidenceBadge");
+  if (!confidenceBadge) return;
+
+  const filled = FIELD_DEFS.filter(d => String(state.fields?.[d.key] || "").trim()).length;
+  const prefix = state.ocrUsed ? "OCR" : "文字擷取";
+
+  confidenceBadge.textContent = `${prefix}・${filled}/${FIELD_DEFS.length} 欄位`;
+  confidenceBadge.classList.toggle("confidence-ok", filled === FIELD_DEFS.length);
+  confidenceBadge.classList.toggle("confidence-warning", filled < FIELD_DEFS.length);
+}
+
 function renderFields() {
   const container = $("resultFields");
   container.innerHTML = "";
@@ -1284,6 +1296,7 @@ if (def.type === "textarea") {
       const manualHint = row.querySelector(".manual-modified-text");
       if (manualHint) manualHint.hidden = !manuallyModified;
       state.updated = state.modifiedKeys.size > 0;
+      updateConfidenceBadge();
       updateQuotationFileName();
       updateGoogleSheetPreview();
     });
@@ -1656,13 +1669,7 @@ async function processFile(file) {
     $("rawText").textContent = text;
 
     const filled = FIELD_DEFS.filter(d => state.fields[d.key]?.trim()).length;
-    const confidenceBadge = $("confidenceBadge");
-    confidenceBadge.textContent =
-      state.ocrUsed
-        ? `OCR・${filled}/${FIELD_DEFS.length} 欄位`
-        : `文字擷取・${filled}/${FIELD_DEFS.length} 欄位`;
-    confidenceBadge.classList.toggle("confidence-ok", filled === FIELD_DEFS.length);
-    confidenceBadge.classList.toggle("confidence-warning", filled < FIELD_DEFS.length);
+    updateConfidenceBadge();
 
     setStatus("判讀完成");
     showToast(`判讀完成：${filled}/${FIELD_DEFS.length} 個欄位有資料`);
