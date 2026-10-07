@@ -43,6 +43,7 @@ const state = {
   currentFile: null,
   fields: emptyFields(),
   rawText: "",
+  layout: null,
   ocrUsed: false,
   originalFields: emptyFields(),
   modifiedKeys: new Set(),
@@ -212,8 +213,8 @@ function buildQuotationFileName() {
 
   if (!contact && !model && !srNumber) return "";
 
-  // 報價單檔名格式：門市名稱_報修設備-SR單號.pdf
-  // 例如：新竹東光 - 智取店_標籤機SBARCO(含裁刀)-3965826.pdf
+  // 複製／顯示的檔名只回傳「檔名本體」，不包含 .pdf。
+  // 實際 PDF 檔案本身仍保留原本的 .pdf 副檔名。
   const sheetModel = getSheetModel(model);
 
   const baseName = [
@@ -223,7 +224,7 @@ function buildQuotationFileName() {
     .filter(Boolean)
     .join("_");
 
-  return baseName ? `${baseName}.pdf` : "";
+  return baseName || "";
 }
 
 function buildGoogleSheetRows() {
@@ -349,7 +350,168 @@ function sanitizeContact(value) {
   return isLikelyStoreName(v) ? v : '';
 }
 
-function parseQuotation(text) {
+
+function groupLayoutLines(items, tolerance = 3.5) {
+  const sorted = [...(items || [])]
+    .filter(item => item && item.str && item.str.trim())
+    .sort((a, b) => (b.y - a.y) || (a.x - b.x));
+
+  const groups = [];
+  for (const item of sorted) {
+    let group = groups.find(g => Math.abs(g.y - item.y) <= tolerance);
+    if (!group) {
+      group = { y: item.y, items: [] };
+      groups.push(group);
+    }
+    group.items.push(item);
+    group.y = group.items.reduce((sum, x) => sum + x.y, 0) / group.items.length;
+  }
+
+  return groups
+    .sort((a, b) => b.y - a.y)
+    .map(group => ({
+      y: group.y,
+      items: group.items.sort((a, b) => a.x - b.x),
+      text: group.items
+        .sort((a, b) => a.x - b.x)
+        .map(item => item.str)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim()
+    }));
+}
+
+function layoutLineContains(line, pattern) {
+  return pattern.test(String(line?.text || ""));
+}
+
+function extractRepairTableByColumns(layoutPages) {
+  if (!Array.isArray(layoutPages) || !layoutPages.length) return null;
+
+  for (const pageItems of layoutPages) {
+    const lines = groupLayoutLines(pageItems);
+    const header = lines.find(line =>
+      /機\s*器\s*品\s*號\s*\/\s*序\s*號/i.test(line.text) &&
+      /故\s*障\s*現\s*象/i.test(line.text) &&
+      /檢\s*測\s*說\s*明/i.test(line.text)
+    );
+
+    if (!header) continue;
+
+    const headerY = header.y;
+    const repairLine = lines.find(line =>
+      line.y < headerY && /客\s*戶\s*維\s*修\s*單\s*號/i.test(line.text)
+    );
+    const bottomY = repairLine ? repairLine.y : headerY - 90;
+
+    // PDF 的欄位標題常由多個字元組成，因此用文字項目的 x 範圍
+    // 找出三個欄位標題的中心，再以資料列實際 x 起點微調欄位界線。
+    const headerItems = header.items;
+    const findSpan = (regex) => {
+      const matched = headerItems.filter(item => regex.test(item.str));
+      if (!matched.length) return null;
+      return {
+        left: Math.min(...matched.map(item => item.x)),
+        right: Math.max(...matched.map(item => item.x + (item.width || 0))),
+        center: (Math.min(...matched.map(item => item.x)) + Math.max(...matched.map(item => item.x + (item.width || 0)))) / 2
+      };
+    };
+
+    // 因為「故障現象／檢測說明」在 PDF 中通常是逐字文字項目，
+    // 這裡直接依 x 位置搜尋關鍵字字元群。
+    const issueChars = headerItems.filter(item => /故|障|現|象/.test(item.str));
+    const inspectionChars = headerItems.filter(item => /檢|測|說|明/.test(item.str));
+    if (!issueChars.length || !inspectionChars.length) continue;
+
+    const issueHeaderCenter = (
+      Math.min(...issueChars.map(item => item.x)) +
+      Math.max(...issueChars.map(item => item.x + (item.width || 0)))
+    ) / 2;
+    const inspectionHeaderCenter = (
+      Math.min(...inspectionChars.map(item => item.x)) +
+      Math.max(...inspectionChars.map(item => item.x + (item.width || 0)))
+    ) / 2;
+
+    // 找出資料區中最常見的文字左起點，通常就是三個欄位的實際內容起點。
+    const dataItems = pageItems.filter(item => item.y < headerY - 3 && item.y > bottomY + 3);
+    const xClusters = [];
+    for (const item of dataItems) {
+      if (!item.str || !item.str.trim()) continue;
+      let cluster = xClusters.find(x => Math.abs(x.x - item.x) <= 4);
+      if (!cluster) {
+        cluster = { x: item.x, count: 0 };
+        xClusters.push(cluster);
+      }
+      cluster.count += 1;
+    }
+    xClusters.sort((a, b) => b.count - a.count);
+
+    const issueDataX = xClusters
+      .filter(c => c.x > 150 && c.x < issueHeaderCenter + 20)
+      .sort((a, b) => Math.abs(a.x - issueHeaderCenter) - Math.abs(b.x - issueHeaderCenter))[0]?.x;
+    const inspectionDataX = xClusters
+      .filter(c => c.x > issueHeaderCenter && c.x < 540)
+      .sort((a, b) => Math.abs(a.x - inspectionHeaderCenter) - Math.abs(b.x - inspectionHeaderCenter))[0]?.x;
+
+    // 這份報價單的實際資料起點與標題中心不同（標題置中、資料靠左），
+    // 所以界線優先取「資料起點」的中點，而不是直接用標題中心。
+    const issueStart = issueDataX ?? Math.max(150, issueHeaderCenter - 90);
+    const inspectionStart = inspectionDataX ?? Math.max(issueStart + 100, inspectionHeaderCenter - 90);
+    const issueBoundary = (issueStart + inspectionStart) / 2;
+
+    const rows = lines.filter(line => line.y < headerY - 3 && line.y > bottomY + 3);
+    const machineParts = [];
+    const problemParts = [];
+    const inspectionParts = [];
+
+    for (const row of rows) {
+      const machine = [];
+      const problem = [];
+      const inspection = [];
+
+      for (const item of row.items) {
+        if (item.x < issueBoundary) machine.push(item.str);
+        else if (item.x < inspectionStart) problem.push(item.str);
+        else inspection.push(item.str);
+      }
+
+      const machineText = machine.join(" ").replace(/\s+/g, " ").trim();
+      const problemText = problem.join(" ").replace(/\s+/g, " ").trim();
+      const inspectionText = inspection.join(" ").replace(/\s+/g, " ").trim();
+
+      if (machineText) machineParts.push({ y: row.y, text: machineText });
+      if (problemText) problemParts.push({ y: row.y, text: problemText });
+      if (inspectionText) inspectionParts.push({ y: row.y, text: inspectionText });
+    }
+
+    const serial = machineParts
+      .map(x => x.text.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i)?.[1])
+      .find(Boolean) || "";
+
+    const problem = cleanIssueText(
+      problemParts
+        .map(x => x.text)
+        .filter(x => !/^\d+$/.test(x))
+        .join(" "),
+      serial
+    );
+
+    const inspection = cleanIssueText(
+      inspectionParts
+        .map(x => x.text)
+        .join(" "),
+      serial
+    );
+
+    if (problem || inspection || serial) {
+      return { serial, problem, inspection };
+    }
+  }
+
+  return null;
+}
+
+function parseQuotation(text, layoutPages = null) {
   const normalized = normalizeText(text);
   const fields = emptyFields();
   const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
@@ -514,15 +676,28 @@ function parseQuotation(text) {
     }
   }
 
+  // 4.5 表格欄位優先使用 PDF 的實際 x/y 座標。
+  // 這比單純依文字先後順序穩定，尤其能處理「故障現象」與「檢測說明」
+  // 同一行、但位於不同欄位的情況。
+  const coordinateTable = extractRepairTableByColumns(layoutPages);
+  if (coordinateTable) {
+    if (coordinateTable.serial) fields.serial = coordinateTable.serial;
+    if (coordinateTable.problem) fields.problem = coordinateTable.problem;
+    if (coordinateTable.inspection) fields.inspection = coordinateTable.inspection;
+  }
+
   // 通用序號備援：不限 UTA，支援 UT、純數字等。
   if (!fields.serial) {
     const serialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
     if (serialMatch) fields.serial = serialMatch[1];
   }
 
+  const coordinateProblem = fields.problem;
+  const coordinateInspection = fields.inspection;
+
   // 5. 故障原因 + 廠商檢測回覆
   // 先處理最可靠的「1.」分隔；沒有編號時，再依常見檢測語句切分。
-  if (issueBlock) {
+  if (issueBlock && (!fields.problem || !fields.inspection)) {
     const numbered = issueBlock.match(/^(.*?)(?=\s*1\.\s*)((?:1\.\s*).*)$/);
 
     if (numbered) {
@@ -566,6 +741,10 @@ function parseQuotation(text) {
     const m = normalized.match(/(\b1\.\s*.*?)(?=\s*客戶維修單號)/i);
     if (m) fields.inspection = cleanIssueText(m[1], fields.serial);
   }
+
+  // 若已由座標表格判讀成功，以座標結果為最高優先，避免後面的文字備援覆蓋。
+  if (coordinateProblem) fields.problem = coordinateProblem;
+  if (coordinateInspection) fields.inspection = coordinateInspection;
 
   // 6. 收費方式：PDF 沒有欄位時固定預設「耗材收費」。
   fields.feeType = firstMatch(normalized, [
@@ -864,6 +1043,27 @@ async function extractPdfText(pdf) {
   return normalizeText(allText);
 }
 
+async function extractPdfLayout(pdf) {
+  const pages = [];
+
+  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+    const page = await pdf.getPage(pageNo);
+    const content = await page.getTextContent();
+
+    pages.push(content.items
+      .filter(item => item && item.str && item.str.trim())
+      .map(item => ({
+        str: item.str,
+        x: Number(item.transform?.[4] || 0),
+        y: Number(item.transform?.[5] || 0),
+        width: Number(item.width || 0),
+        height: Number(item.height || Math.abs(item.transform?.[3] || 0))
+      })));
+  }
+
+  return pages;
+}
+
 async function renderPage(pageNo) {
   if (!state.pdfDoc) return;
 
@@ -943,6 +1143,7 @@ async function processFile(file) {
   state.fields = emptyFields();
   state.fields.fillDate = formatUploadDate(new Date());
   state.rawText = "";
+  state.layout = null;
   state.ocrUsed = false;
 
   $("fileName").textContent = file.name;
@@ -964,6 +1165,7 @@ async function processFile(file) {
     await renderPage(1);
 
     let text = await extractPdfText(state.pdfDoc);
+    state.layout = await extractPdfLayout(state.pdfDoc);
 
     /*
      * 如果擷取到的文字太少，視為掃描 PDF，改走 OCR。
@@ -973,10 +1175,11 @@ async function processFile(file) {
       state.ocrUsed = true;
       setStatus("文字不足，啟動 OCR…");
       text = await ocrPdf(state.pdfDoc);
+      state.layout = null;
     }
 
     state.rawText = text;
-    state.fields = parseQuotation(text);
+    state.fields = parseQuotation(text, state.layout);
     state.fields.fillDate = formatUploadDate(new Date());
 
     renderFields();
@@ -1052,6 +1255,7 @@ function clearAll() {
   state.modifiedKeys = new Set();
   state.updated = false;
   state.rawText = "";
+  state.layout = null;
   state.ocrUsed = false;
 
   $("pdfInput").value = "";
