@@ -47,7 +47,8 @@ const state = {
   ocrUsed: false,
   originalFields: emptyFields(),
   modifiedKeys: new Set(),
-  updated: false
+  updated: false,
+  pdfZoom: 1.0
 };
 
 function emptyFields() {
@@ -681,12 +682,26 @@ function extractRepairTableByColumns(layoutPages) {
 }
 
 function extractRepairPairs(normalized) {
-  const repairLine = normalized.match(/客戶維修單號\s*[:：]?\s*([^\n]+)/i)?.[1] || "";
+  // 「客戶維修單號」後面的內容有時會因 PDF 排版換行，
+  // 例如：TC200-
+  // RR2609210138
+  // 因此不能只抓單一行；先抓到備註區／下一個表格前，再跨換行尋找所有 型號-RR。
+  const blockMatch = String(normalized || "").match(
+    /客戶維修單號\s*[:：]?\s*([\s\S]*?)(?=\n\s*\d+、|\n\s*No\.\s*料\s*號|\n\s*No\.\s*機|$)/i
+  );
+  const repairBlock = blockMatch?.[1] || "";
+  if (!repairBlock) return [];
+
   const repairPairs = [];
-  const pairRe = /([A-Za-z0-9()\-\s]+?)\s*[-–—]\s*(RR[A-Z0-9-]+)/gi;
+  const pairRe = /([A-Za-z0-9][A-Za-z0-9()\s_.]*?)\s*[-–—]\s*(RR[A-Z0-9-]+)/gi;
   let pairMatch;
-  while ((pairMatch = pairRe.exec(repairLine)) !== null) {
-    repairPairs.push({ model: getSheetModel(cleanValue(pairMatch[1])), caseNumber: pairMatch[2] });
+  while ((pairMatch = pairRe.exec(repairBlock)) !== null) {
+    const model = cleanValue(pairMatch[1]).replace(/[\s]+$/g, "");
+    if (!model) continue;
+    const caseNumber = pairMatch[2].toUpperCase();
+    if (!repairPairs.some(x => x.caseNumber === caseNumber)) {
+      repairPairs.push({ model: getSheetModel(model), caseNumber });
+    }
   }
   return repairPairs;
 }
@@ -698,24 +713,44 @@ function extractRepairSerialsFromText(lines) {
   const end = repairIndex >= 0 ? repairIndex : lines.length;
   const serials = [];
 
+  const serialRe = /\b(UTA[A-Z0-9]{6,}|UT\d{8,}|[A-Z]{1,3}\d{6,}(?:-[A-Z0-9]+)?|\d{7,})\b/i;
+  const machineRe = /\b[A-Z0-9][A-Z0-9._-]{7,}\b/i;
+
   for (let i = headerIndex + 1; i < end; i++) {
-    // 兩種常見 PDF 文字排列：
-    // ①「1」獨立一行，下一行機器品號；②「1 機器品號 ...」同一行。
+    let line = String(lines[i] || "").trim();
+    if (!line) continue;
+
+    // 支援「1」獨立一行、或「1 機器品號」同一行。
     let machineLineIndex = -1;
-    if (/^\d+\s*$/.test(lines[i])) {
+    if (/^\d+\s*$/.test(line)) {
       machineLineIndex = i + 1;
-    } else if (/^\d+\s+[A-Z0-9][A-Z0-9._-]{7,}/i.test(lines[i])) {
+    } else if (/^\d+\s+/.test(line) && machineRe.test(line)) {
       machineLineIndex = i;
     }
     if (machineLineIndex < 0 || machineLineIndex >= end) continue;
 
-    const machineLine = lines[machineLineIndex] || "";
-    const machine = machineLine.match(/\b[A-Z0-9][A-Z0-9._-]{7,}\b/i)?.[0];
-    if (!machine) continue;
+    const machineLine = String(lines[machineLineIndex] || "");
+    const machineMatch = machineLine.match(machineRe);
+    if (!machineMatch) continue;
 
-    let j = machineLineIndex + 1;
-    while (j < end && !lines[j]) j++;
-    const serial = (lines[j] || "").match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|[A-Z]{1,3}\d{6,}(?:-[A-Z0-9]+)?|\d{7,})\b/i)?.[1];
+    const machineCode = machineMatch[0];
+    // 序號通常在機器品號下一行；若 PDF 把它和機器品號放同一行，也一併檢查。
+    const candidates = [];
+    const sameLineRemainder = machineLine.slice((machineMatch.index || 0) + machineCode.length);
+    candidates.push(sameLineRemainder);
+    for (let j = machineLineIndex + 1; j <= Math.min(end - 1, machineLineIndex + 3); j++) {
+      candidates.push(String(lines[j] || ""));
+    }
+
+    let serial = "";
+    for (const candidateText of candidates) {
+      const m = candidateText.match(serialRe);
+      if (m && m[1].toLowerCase() !== machineCode.toLowerCase()) {
+        serial = m[1];
+        break;
+      }
+    }
+
     if (serial && !serials.some(x => x.toLowerCase() === serial.toLowerCase())) {
       serials.push(serial);
     }
@@ -746,13 +781,13 @@ function applyMultiDeviceAlignment(fields, normalized, lines, coordinateTable) {
     if (slashParts.length > 1) fields.srNumber = slashParts.join("\n");
   }
 
-  const recordSerials = records.map(r => r.serial).filter(Boolean);
+  const recordSerials = records.map(r => cleanSingleLine(r.serial)).filter(Boolean);
   if (recordSerials.length >= deviceCount) fields.serial = recordSerials.slice(0, deviceCount).join("\n");
   else if (textSerials.length >= deviceCount) fields.serial = textSerials.slice(0, deviceCount).join("\n");
   else if (recordSerials.length > 1) fields.serial = recordSerials.join("\n");
 
-  const recordProblems = records.map(r => r.problem).filter(Boolean);
-  const recordInspections = records.map(r => r.inspection).filter(Boolean);
+  const recordProblems = records.map(r => cleanIssueText(r.problem, r.serial)).filter(Boolean);
+  const recordInspections = records.map(r => cleanIssueText(r.inspection, r.serial)).filter(Boolean);
   if (recordProblems.length >= deviceCount) fields.problem = recordProblems.slice(0, deviceCount).join("\n");
   if (recordInspections.length >= deviceCount) fields.inspection = recordInspections.slice(0, deviceCount).join("\n");
 }
@@ -969,6 +1004,15 @@ function parseQuotation(text, layoutPages = null) {
 
   // 多台設備：依設備一對一對齊案件編號、SR、序號、故障與檢測結果。
   applyMultiDeviceAlignment(fields, normalized, lines, coordinateTable);
+
+  // 故障現象／檢測說明：每一台設備可以用換行分隔，但同一台設備內部的
+  // PDF 換行必須先合併，避免 Google Sheet 產生假的第二列／第三列。
+  const normalizeDeviceText = (value) => normalizeDeviceFieldLines(value)
+    .map(line => cleanIssueText(line))
+    .filter(Boolean)
+    .join("\n");
+  fields.problem = normalizeDeviceText(fields.problem);
+  fields.inspection = normalizeDeviceText(fields.inspection);
 
   // 通用序號備援：不限 UTA，支援 UT、純數字等。
   if (!fields.serial) {
@@ -1231,11 +1275,19 @@ if (def.type === "textarea") {
         // 若使用者把內容改回原始判讀結果，則取消該欄位標示。
         state.modifiedKeys.delete(def.key);
       }
-      row.classList.toggle("field-updated", state.modifiedKeys.has(def.key));
+      const manuallyModified = state.modifiedKeys.has(def.key);
+      row.classList.toggle("field-updated", manuallyModified);
+      const manualHint = row.querySelector(".manual-modified-text");
+      if (manualHint) manualHint.hidden = !manuallyModified;
       state.updated = state.modifiedKeys.size > 0;
       updateQuotationFileName();
       updateGoogleSheetPreview();
     });
+
+    const manualHint = document.createElement("small");
+    manualHint.className = "manual-modified-text";
+    manualHint.textContent = "已手動修改";
+    manualHint.hidden = !state.modifiedKeys.has(def.key);
 
     // 手動貼上時：一般判讀欄位自動把換行整併成同一行，避免從 PDF/Excel 貼上後
     // 畫面看似同一段內容、實際卻含有換行。零件相關欄位則保留換行，
@@ -1275,6 +1327,7 @@ if (def.type === "textarea") {
 
     row.appendChild(label);
     row.appendChild(el);
+    row.appendChild(manualHint);
 
     // 多台設備但產品數量與設備台數相同時，系統會自動按設備一對一拆成數量 1。
     // 若數量情況不符合這個安全規則，不擅自拆單，只在欄位上提示「數量異常」。
@@ -1470,7 +1523,7 @@ async function renderPage(pageNo) {
   state.currentPage = Math.max(1, Math.min(pageNo, state.pdfDoc.numPages));
 
   const page = await state.pdfDoc.getPage(state.currentPage);
-  const viewport = page.getViewport({ scale: state.pdfZoom || 1.45 });
+  const viewport = page.getViewport({ scale: state.pdfZoom || 1.0 });
   const canvas = $("pdfCanvas");
   const context = canvas.getContext("2d");
 
@@ -1545,6 +1598,8 @@ async function processFile(file) {
   state.rawText = "";
   state.layout = null;
   state.ocrUsed = false;
+  state.pdfZoom = 1.0;
+  $("pdfZoomLabel").textContent = "100%";
 
   $("fileName").textContent = file.name;
   $("fileMeta").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
@@ -1581,6 +1636,9 @@ async function processFile(file) {
     state.rawText = text;
     state.fields = parseQuotation(text, state.layout);
     state.fields.fillDate = formatUploadDate(new Date());
+    state.originalFields = JSON.parse(JSON.stringify(state.fields));
+    state.modifiedKeys = new Set();
+    state.updated = false;
 
     renderFields();
     updateQuotationFileName();
@@ -1657,6 +1715,7 @@ function clearAll() {
   state.rawText = "";
   state.layout = null;
   state.ocrUsed = false;
+  state.pdfZoom = 1.0;
 
   $("pdfInput").value = "";
   $("toolbar").classList.add("hidden");
@@ -1670,6 +1729,7 @@ function clearAll() {
   $("fileList").innerHTML = "";
   $("viewerEmpty").classList.remove("hidden");
   $("pageLabel").textContent = "第 1 / 1 頁";
+  $("pdfZoomLabel").textContent = "100%";
   $("pdfCanvas").getContext("2d").clearRect(
     0, 0,
     $("pdfCanvas").width,
@@ -1724,11 +1784,6 @@ $("pdfZoomInBtn").addEventListener("click", async () => {
   await renderPage(state.currentPage);
 });
 
-$("pdfZoomFitBtn").addEventListener("click", async () => {
-  state.pdfZoom = 1.45;
-  $("pdfZoomLabel").textContent = "145%";
-  await renderPage(state.currentPage);
-});
 
 // PDF：在固定大小的預覽框內放大、縮小與拖曳移動。
 // Canvas 會以實際 PDF 尺寸渲染，因此放大後不會再被 max-width 壓回原尺寸。
@@ -1775,7 +1830,7 @@ $("pdfZoomFitBtn").addEventListener("click", async () => {
     if (!state.pdfDoc || e.ctrlKey || e.metaKey) return;
     e.preventDefault();
 
-    const oldZoom = state.pdfZoom || 1.45;
+    const oldZoom = state.pdfZoom || 1.0;
     const direction = e.deltaY < 0 ? 1 : -1;
     const newZoom = Math.max(0.6, Math.min(3.5, +(oldZoom + direction * 0.12).toFixed(2)));
     if (newZoom === oldZoom) return;
