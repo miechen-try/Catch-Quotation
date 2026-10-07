@@ -356,22 +356,29 @@ function mapContactToWarehouse(contact) {
   const raw = cleanSingleLine(contact);
   const lower = raw.toLowerCase();
 
-  // SOC 北倉：指定聯絡人
-  if (['emily hsu', 'emma lin', 'benson kuo'].includes(lower)) {
+  // 蝦皮倉別規則一律使用「包含」判斷。
+  // 例如「Emily Hsu / 其他資訊」或「陳俐瑾(採購)」都要能命中。
+
+  // SOC 北倉
+  if (
+    lower.includes('emily hsu') ||
+    lower.includes('emma lin') ||
+    lower.includes('benson kuo')
+  ) {
     return 'SOC北倉';
   }
 
-  // SOC 南倉：指定聯絡人；「孫健豪/侯淑婷」視為兩個獨立姓名都符合。
+  // SOC 南倉
   if (
-    lower === 'tiana' ||
-    lower === 'ann chen' ||
+    lower.includes('tiana') ||
+    lower.includes('ann chen') ||
     raw.includes('孫健豪') ||
     raw.includes('侯淑婷')
   ) {
     return 'SOC南倉';
   }
 
-  // IM 北倉：只要聯絡人文字中包含指定姓名即可。
+  // IM 北倉
   if (
     raw.includes('陳俐瑾') ||
     raw.includes('林嘉祥') ||
@@ -536,9 +543,33 @@ function extractRepairTableByColumns(layoutPages) {
       if (inspectionText) inspectionParts.push({ y: row.y, text: inspectionText });
     }
 
-    const serial = machineParts
-      .map(x => x.text.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i)?.[1])
+    // 設備序號：除了原本的 UTA / UT / 純數字格式，也支援
+    // C6261408 這類「英文字母 + 6 碼以上數字」的序號。
+    // 由於機器品號與設備序號通常同在同一欄，先排除第一個機器品號，
+    // 再從同欄後續文字尋找序號，避免把 GPHS67811003K03.001 當成序號。
+    const machineCode = machineParts
+      .map(x => x.text.match(/\b[A-Z0-9][A-Z0-9._-]{7,}\b/i)?.[0])
       .find(Boolean) || "";
+
+    const serialCandidates = [];
+    for (const part of machineParts) {
+      const matches = part.text.match(/\b[A-Z][A-Z0-9._-]{5,}\b|\b\d{7,}\b/gi) || [];
+      for (const candidate of matches) {
+        if (candidate.toLowerCase() === machineCode.toLowerCase()) continue;
+        if (!serialCandidates.some(x => x.toLowerCase() === candidate.toLowerCase())) {
+          serialCandidates.push(candidate);
+        }
+      }
+    }
+
+    const serial =
+      machineParts
+        .map(x => x.text.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i)?.[1])
+        .find(Boolean) ||
+      serialCandidates.find(candidate => /^[A-Z]\d{6,}$/i.test(candidate)) ||
+      serialCandidates.find(candidate => /^\d{7,}$/.test(candidate)) ||
+      serialCandidates[0] ||
+      "";
 
     const problem = cleanIssueText(
       problemParts
@@ -569,13 +600,18 @@ function parseQuotation(text, layoutPages = null) {
   const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
 
   // 1. 門市名稱
-  fields.contact = sanitizeContact(firstMatch(normalized, [
+  // 先保留「原始聯絡人」，再套用特殊倉別規則。
+  // 不能先 sanitizeContact，否則像「陳俐瑾」這類純 2~4 字中文姓名
+  // 會被一般門市名稱防呆規則過濾掉，導致特殊倉別無法命中。
+  const rawContact = cleanSingleLine(firstMatch(normalized, [
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
   ]));
 
-  // 蝦皮倉別特殊規則：判讀完成後，將指定聯絡人轉成對應門市名稱。
-  fields.contact = mapContactToWarehouse(fields.contact);
+  const mappedWarehouse = mapContactToWarehouse(rawContact);
+  fields.contact = mappedWarehouse !== rawContact
+    ? mappedWarehouse
+    : sanitizeContact(rawContact);
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
@@ -743,8 +779,18 @@ function parseQuotation(text, layoutPages = null) {
 
   // 通用序號備援：不限 UTA，支援 UT、純數字等。
   if (!fields.serial) {
-    const serialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
-    if (serialMatch) fields.serial = serialMatch[1];
+    // 通用備援仍優先使用既有 UTA / UT / 純數字格式。
+    // C6261408 這類序號若沒有成功走座標判讀，則只從「機器品號/序號」
+    // 表頭後的資料列尋找，避免直接從整份 PDF 把機器品號誤當成設備序號。
+    const serialMatch = normalized.match(
+      /機\s*器\s*品\s*號\s*\/\s*序\s*號[\s\S]{0,180}?\b[A-Z0-9][A-Z0-9._-]{7,}\b\s*\n\s*([A-Z]\d{6,})\b/i
+    );
+    if (serialMatch) {
+      fields.serial = serialMatch[1];
+    } else {
+      const legacySerialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
+      if (legacySerialMatch) fields.serial = legacySerialMatch[1];
+    }
   }
 
   const coordinateProblem = fields.problem;
