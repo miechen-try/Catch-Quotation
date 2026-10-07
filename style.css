@@ -127,20 +127,19 @@ button, input, textarea {
   gap: 6px;
   line-height: 1.2;
   vertical-align: middle;
-  /* Google 文件色票風格：淺綠色 1；文字固定白色 */
-  background: #93c47d;
+  background: #34A853;
   color: #FFFFFF;
   padding: 9px 14px;
   font-weight: 600;
 }
 
 #copyBtn {
-  background: #93c47d;
+  background: #34A853;
   color: #FFFFFF;
 }
 
 #copyBtn:hover {
-  background: #76ad5d;
+  background: #2E8B47;
 }
 
 
@@ -160,7 +159,7 @@ button, input, textarea {
 
 .google-sheet-icon span {
   display: block;
-  border: 1px solid #93c47d;
+  border: 1px solid #34A853;
   background: #FFFFFF;
 }
 
@@ -256,7 +255,7 @@ button, input, textarea {
 }
 
 .filename-btn:hover {
-  background: #0b3f9e;
+  background: #0D2D52;
   color: #FFFFFF;
 }
 
