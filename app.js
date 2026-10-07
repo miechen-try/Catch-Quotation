@@ -171,6 +171,7 @@ const MODEL_SHEET_MAP = {
   "MS838": "有線掃碼槍MS838",
   "MS842": "無線掃瑪槍MS842P",
   "MS852": "無線掃碼槍MS852P",
+  "MS852P": "無線掃碼槍MS852P",
   "RP-700": "熱感應機RP-700",
   "Sewoo": "熱感應機Sewoo",
   "SBarco": "標籤機SBarco",
@@ -182,7 +183,8 @@ const MODEL_SHEET_MAP = {
   "PA768槍把": "PDA槍把(PA768)",
   "DA210": "藍芽標籤機DA210",
   "TSC ALPHA-40L": "攜帶式藍芽標籤機TSC ALPHA-40L",
-  "Cino A678(RS232)": "無線掃碼槍CinoA678(RS232)"
+  "Cino A678(RS232)": "無線掃碼槍CinoA678(RS232)",
+  "TC200": "標籤機TC200"
 };
 
 function getSheetModel(model) {
@@ -254,24 +256,32 @@ function buildGoogleSheetRows() {
     .split(/\r?\n/)
     .map(x => x.trim());
 
+  const caseNumbers = splitRows(f.caseNumber).filter(Boolean);
   const parts = splitRows(f.partNumbers).filter(Boolean);
   const names = splitRows(f.products).filter(Boolean);
   const quantities = splitRows(f.quantities).filter(Boolean);
   const prices = splitRows(f.unitPrices).filter(Boolean);
-  const models = splitRows(f.model);
-  const serials = splitRows(f.serial);
-  const problems = splitRows(f.problem);
-  const inspections = splitRows(f.inspection);
+  const models = splitRows(f.model).filter(Boolean);
+  const serials = splitRows(f.serial).filter(Boolean);
+  const problems = splitRows(f.problem).filter(Boolean);
+  const inspections = splitRows(f.inspection).filter(Boolean);
 
-  const rowCount = Math.max(
-    parts.length, names.length, quantities.length, prices.length,
-    models.length, serials.length, problems.length, inspections.length, 1
-  );
+  const deviceCount = Math.max(caseNumbers.length, models.length, serials.length, problems.length, inspections.length);
+  const shouldSplitQuantityByDevice = deviceCount > 1 && quantities.length > 0 &&
+    quantities.length === parts.length && quantities.every(q => Number(String(q).replace(/,/g, "")) === deviceCount);
+
+  const rowCount = shouldSplitQuantityByDevice
+    ? deviceCount
+    : Math.max(
+        parts.length, names.length, quantities.length, prices.length,
+        caseNumbers.length, models.length, serials.length, problems.length, inspections.length, 1
+      );
   const rows = [];
 
   for (let i = 0; i < rowCount; i++) {
+    const partIndex = shouldSplitQuantityByDevice ? 0 : i;
     const row = [
-      f.caseNumber,
+      caseNumbers[i] || caseNumbers[0] || f.caseNumber,
       f.srNumber,
       f.fillDate,
       "",
@@ -281,10 +291,10 @@ function buildGoogleSheetRows() {
       problems[i] || problems[0] || "",
       inspections[i] || inspections[0] || "",
       f.feeType || "耗材收費",
-      parts[i] || "",
-      names[i] || "",
-      quantities[i] || "",
-      prices[i] || ""
+      parts[partIndex] || "",
+      names[partIndex] || "",
+      shouldSplitQuantityByDevice ? "1" : (quantities[i] || ""),
+      prices[partIndex] || ""
     ];
 
     rows.push(
@@ -589,8 +599,81 @@ function extractRepairTableByColumns(layoutPages) {
       serial
     );
 
+    // 依「機器品號」的出現位置建立一對一設備紀錄。
+    // 同一台設備的序號可能在下一行，因此先建立設備，再把後續序號
+    // 與故障／檢測欄位歸回同一筆。這可處理同一張報價單同時有 2 台以上設備。
+    const records = [];
+    let current = null;
+
+    for (const row of rows) {
+      const machine = [];
+      const problem = [];
+      const inspection = [];
+
+      for (const item of row.items) {
+        if (item.x < machineBoundary) machine.push(item.str);
+        else if (item.x < issueBoundary) problem.push(item.str);
+        else inspection.push(item.str);
+      }
+
+      const machineText = machine.join(" ").replace(/\s+/g, " ").trim();
+      const problemText = problem.join(" ").replace(/\s+/g, " ").trim();
+      const inspectionText = inspection.join(" ").replace(/\s+/g, " ").trim();
+      if (!machineText && !problemText && !inspectionText) continue;
+
+      const machineCodeMatch = machineText.match(/\b[A-Z0-9][A-Z0-9._-]{7,}\b/i);
+      const machineCode = machineCodeMatch?.[0] || "";
+
+      if (machineCode) {
+        current = { machineCode, serial: "", problem: "", inspection: "" };
+        records.push(current);
+      }
+
+      if (!current) continue;
+
+      const machineWithoutCode = machineText
+        .replace(machineCode ? new RegExp(escapeRegExp(machineCode), "i") : /$^/, " ")
+        .replace(/^\d+\s+/, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (machineWithoutCode) {
+        const serialMatches = machineWithoutCode.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|[A-Z]\d{6,}|\d{7,})\b/gi) || [];
+        for (const candidate of serialMatches) {
+          if (!current.serial && candidate.toLowerCase() !== current.machineCode.toLowerCase()) {
+            current.serial = candidate;
+            break;
+          }
+        }
+      }
+
+      if (problemText && !/^\d+$/.test(problemText)) {
+        current.problem = cleanIssueText(
+          [current.problem, problemText].filter(Boolean).join(" "),
+          current.serial
+        );
+      }
+      if (inspectionText) {
+        current.inspection = cleanIssueText(
+          [current.inspection, inspectionText].filter(Boolean).join(" "),
+          current.serial
+        );
+      }
+    }
+
+    // 若上面的逐設備分組成功，優先回傳完整 records；單筆資料也沿用相同格式。
+    const validRecords = records.filter(r => r.serial || r.problem || r.inspection);
+    if (validRecords.length) {
+      return {
+        serial: validRecords.map(r => r.serial).filter(Boolean).join("\n"),
+        problem: validRecords.map(r => r.problem).filter(Boolean).join("\n"),
+        inspection: validRecords.map(r => r.inspection).filter(Boolean).join("\n"),
+        records: validRecords
+      };
+    }
+
     if (problem || inspection || serial) {
-      return { serial, problem, inspection };
+      return { serial, problem, inspection, records: [{ serial, problem, inspection }] };
     }
   }
 
@@ -623,13 +706,23 @@ function parseQuotation(text, layoutPages = null) {
   ]);
 
   // 3. 案件編號 + 原始報修設備
-  const repairMatch = normalized.match(
-    /客戶維修單號\s*[:：]?\s*(.*?)\s*-\s*(RR[A-Z0-9-]+)/i
-  );
-  if (repairMatch) {
-    const repairPrefix = cleanValue(repairMatch[1]);
-    fields.caseNumber = repairMatch[2];
-    fields.model = getSheetModel(repairPrefix);
+  const repairLineMatch = normalized.match(/客戶維修單號\s*[:：]?\s*([^\n]+)/i);
+  if (repairLineMatch) {
+    const repairLine = cleanValue(repairLineMatch[1]);
+    const repairPairs = [];
+    const pairRe = /([A-Za-z0-9()\-\s]+?)\s*-\s*(RR[A-Z0-9-]+)/gi;
+    let pairMatch;
+    while ((pairMatch = pairRe.exec(repairLine)) !== null) {
+      repairPairs.push({
+        model: getSheetModel(cleanValue(pairMatch[1])),
+        caseNumber: pairMatch[2]
+      });
+    }
+
+    if (repairPairs.length) {
+      fields.caseNumber = repairPairs.map(x => x.caseNumber).join("\n");
+      fields.model = repairPairs.map(x => x.model).join("\n");
+    }
   }
 
   if (!fields.caseNumber) {
@@ -638,7 +731,7 @@ function parseQuotation(text, layoutPages = null) {
   }
 
   if (!fields.model) {
-    const modelMatch = normalized.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-700|Sewoo|SBarco(?:\(含裁刀\))?|ZD230|DA210|TSC\s+ALPHA-40L)\b/i);
+    const modelMatch = normalized.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-700|Sewoo|SBarco(?:\(含裁刀\))?|ZD230|DA210|TSC\s+ALPHA-40L|TC200)\b/i);
     if (modelMatch) fields.model = cleanValue(modelMatch[1]);
   }
 
@@ -778,6 +871,29 @@ function parseQuotation(text, layoutPages = null) {
     if (coordinateTable.serial) fields.serial = coordinateTable.serial;
     if (coordinateTable.problem) fields.problem = coordinateTable.problem;
     if (coordinateTable.inspection) fields.inspection = coordinateTable.inspection;
+
+    // 同一張報價單有多台設備時，依維修單號順序把型號與案件編號對齊設備列。
+    if (coordinateTable.records?.length > 1) {
+      const records = coordinateTable.records;
+      const repairLine = normalized.match(/客戶維修單號\s*[:：]?\s*([^\n]+)/i)?.[1] || "";
+      const pairRe = /([A-Za-z0-9()\-\s]+?)\s*-\s*(RR[A-Z0-9-]+)/gi;
+      const repairPairs = [];
+      let pairMatch;
+      while ((pairMatch = pairRe.exec(repairLine)) !== null) {
+        repairPairs.push({
+          model: getSheetModel(cleanValue(pairMatch[1])),
+          caseNumber: pairMatch[2]
+        });
+      }
+
+      if (repairPairs.length === records.length) {
+        fields.caseNumber = repairPairs.map(x => x.caseNumber).join("\n");
+        fields.model = repairPairs.map(x => x.model).join("\n");
+      } else if (repairPairs.length === 1) {
+        fields.model = repairPairs[0].model;
+        fields.caseNumber = repairPairs[0].caseNumber;
+      }
+    }
   }
 
   // 通用序號備援：不限 UTA，支援 UT、純數字等。
@@ -883,12 +999,15 @@ function parseQuotation(text, layoutPages = null) {
         }
         buffer = line;
       } else if (buffer) {
-        // PDF 常把料號最後一個字母拆到下一行，例如：
-        // 84-T400-017-003.SR
-        // P
-        // 印字頭...
-        // 這裡要把 P 接回料號，而不是接到金額後面。
-        if (/^[A-Z0-9]{1,3}$/.test(line) && /\.[A-Z]{2}\s+[\u3400-\u4dbf\u4e00-\u9fff]/i.test(buffer)) {
+        // PDF 常把料號最後一段拆到下一行，例如：
+        // RBATC10283R7ZR0
+        // .SRP
+        // UC2210, 750F UltraCap Capacitor ...
+        // 或把 84-T400-017-003.SR / P 拆成兩行。
+        // 這些都是料號的續行，必須先接回料號，再交給 parseProductBuffer。
+        if (/^\.[A-Z0-9]{1,8}$/.test(line) && /\b[A-Z0-9][A-Z0-9._-]{5,}\s*$/.test(buffer)) {
+          buffer = buffer.trimEnd() + line;
+        } else if (/^[A-Z0-9]{1,3}$/.test(line) && /\.[A-Z]{2}\s+[\u3400-\u4dbf\u4e00-\u9fff]/i.test(buffer)) {
           buffer = buffer.replace(/(\.[A-Z]{2})(?=\s+[\u3400-\u4dbf\u4e00-\u9fff])/i, `$1${line}`);
         } else {
           // 其他拆行內容才接到目前產品列尾端。
@@ -926,24 +1045,23 @@ function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitP
   let name = "";
   let partNumber = "";
 
-  // 第一優先：料號與品名中間有中文，沿用原本規則。
-  const chineseIndex = beforeUnit.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
-  if (chineseIndex >= 0) {
-    const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
-    const possibleName = beforeUnit.slice(chineseIndex).trim();
-    if (possiblePart) {
-      beforeUnit = possiblePart;
-      name = possibleName;
-    }
+  // 第一優先：PDF 表格的料號通常是「第一個 token」，品名從第二個 token 開始。
+  // 這一點很重要，例如「609737G. COLOR加工_MS852_136C Trigger V4」
+  // 不能從第一個中文字「工」切割，否則 COLOR 會被錯誤併入料號。
+  const tokens = beforeUnit.split(/\s+/).filter(Boolean);
+  if (tokens.length >= 2 && /^[A-Z0-9][A-Z0-9._-]{5,}$/i.test(tokens[0])) {
+    beforeUnit = tokens[0];
+    name = tokens.slice(1).join(" ");
   } else {
-    // 第二優先：英文品名，例如：
-    // RBATC1028SRP UC2210_750 UltraCap Capacitor
-    // 這類資料沒有中文字，不能再用「第一個中文字」切割。
-    // 以第一個 token 作為料號，其餘全部視為品名。
-    const tokens = beforeUnit.split(/\s+/).filter(Boolean);
-    if (tokens.length >= 2 && /^[A-Z0-9][A-Z0-9._-]{5,}$/i.test(tokens[0])) {
-      beforeUnit = tokens[0];
-      name = tokens.slice(1).join(" ");
+    // 備援：料號與品名沒有明確空白時，才使用第一個中文字切割。
+    const chineseIndex = beforeUnit.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
+    if (chineseIndex >= 0) {
+      const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
+      const possibleName = beforeUnit.slice(chineseIndex).trim();
+      if (possiblePart) {
+        beforeUnit = possiblePart;
+        name = possibleName;
+      }
     }
   }
 
@@ -1081,6 +1199,30 @@ if (def.type === "textarea") {
 
     row.appendChild(label);
     row.appendChild(el);
+
+    // 多台設備但產品數量與設備台數相同時，系統會自動按設備一對一拆成數量 1。
+    // 若數量情況不符合這個安全規則，不擅自拆單，只在欄位上提示「數量異常」。
+    if (def.key === "quantities") {
+      const countLines = (value) => String(value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean).length;
+      const deviceCount = Math.max(
+        countLines(state.fields.caseNumber),
+        countLines(state.fields.model),
+        countLines(state.fields.serial),
+        countLines(state.fields.problem),
+        countLines(state.fields.inspection)
+      );
+      const qtyValues = String(state.fields.quantities || "").split(/\r?\n/).map(x => Number(x.replace(/,/g, "").trim())).filter(Number.isFinite);
+      const safeSplit = deviceCount > 1 && qtyValues.length > 0 && qtyValues.length === countLines(state.fields.partNumbers) && qtyValues.every(q => q === deviceCount);
+      const suspicious = deviceCount > 1 && !safeSplit && (qtyValues.length === 0 || qtyValues.some(q => q !== 1));
+      if (suspicious) {
+        row.classList.add("quantity-warning");
+        const hint = document.createElement("small");
+        hint.className = "quantity-warning-text";
+        hint.textContent = "數量異常";
+        row.appendChild(hint);
+      }
+    }
+
     container.appendChild(row);
   }
 

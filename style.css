@@ -171,6 +171,29 @@ button, input, textarea {
   margin-right: -8px;
 }
 
+
+.quantity-warning {
+  background: #fff8d6;
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-left: -8px;
+  margin-right: -8px;
+}
+
+.quantity-warning .field-textarea,
+.quantity-warning .field-input {
+  border-color: #e0b400;
+  background: #fffdf0;
+}
+
+.quantity-warning-text {
+  grid-column: 2;
+  color: #9a6b00;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: -6px;
+}
+
 .secondary-btn:hover {
   background: #2E8B47;
 }
