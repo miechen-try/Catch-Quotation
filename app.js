@@ -1275,8 +1275,12 @@ if (def.type === "textarea") {
         // 若使用者把內容改回原始判讀結果，則取消該欄位標示。
         state.modifiedKeys.delete(def.key);
       }
+      const hasValue = String(el.value || "").trim().length > 0;
       const manuallyModified = state.modifiedKeys.has(def.key);
+      row.classList.toggle("field-missing", !hasValue);
       row.classList.toggle("field-updated", manuallyModified);
+      const missingHint = row.querySelector(".field-missing-text");
+      if (missingHint) missingHint.hidden = hasValue;
       const manualHint = row.querySelector(".manual-modified-text");
       if (manualHint) manualHint.hidden = !manuallyModified;
       state.updated = state.modifiedKeys.size > 0;
@@ -1288,6 +1292,13 @@ if (def.type === "textarea") {
     manualHint.className = "manual-modified-text";
     manualHint.textContent = "已手動修改";
     manualHint.hidden = !state.modifiedKeys.has(def.key);
+
+    const hasValue = String(el.value || "").trim().length > 0;
+    row.classList.toggle("field-missing", !hasValue);
+    const missingHint = document.createElement("small");
+    missingHint.className = "field-missing-text";
+    missingHint.textContent = "資料異常";
+    missingHint.hidden = hasValue;
 
     // 手動貼上時：一般判讀欄位自動把換行整併成同一行，避免從 PDF/Excel 貼上後
     // 畫面看似同一段內容、實際卻含有換行。零件相關欄位則保留換行，
@@ -1328,6 +1339,7 @@ if (def.type === "textarea") {
     row.appendChild(label);
     row.appendChild(el);
     row.appendChild(manualHint);
+    row.appendChild(missingHint);
 
     // 多台設備但產品數量與設備台數相同時，系統會自動按設備一對一拆成數量 1。
     // 若數量情況不符合這個安全規則，不擅自拆單，只在欄位上提示「數量異常」。
@@ -1343,8 +1355,7 @@ if (def.type === "textarea") {
       const qtyValues = String(state.fields.quantities || "").split(/\r?\n/).map(x => Number(x.replace(/,/g, "").trim())).filter(Number.isFinite);
       const safeSplit = deviceCount > 1 && qtyValues.length > 0 && qtyValues.length === countLines(state.fields.partNumbers) && qtyValues.every(q => q === deviceCount);
       const suspicious = deviceCount > 1 && !safeSplit && (qtyValues.length === 0 || qtyValues.some(q => q !== 1));
-      if (suspicious) {
-        row.classList.add("quantity-warning");
+      if (suspicious && hasValue) {
         const hint = document.createElement("small");
         hint.className = "quantity-warning-text";
         hint.textContent = "數量異常";
@@ -1645,10 +1656,13 @@ async function processFile(file) {
     $("rawText").textContent = text;
 
     const filled = FIELD_DEFS.filter(d => state.fields[d.key]?.trim()).length;
-    $("confidenceBadge").textContent =
+    const confidenceBadge = $("confidenceBadge");
+    confidenceBadge.textContent =
       state.ocrUsed
         ? `OCR・${filled}/${FIELD_DEFS.length} 欄位`
         : `文字擷取・${filled}/${FIELD_DEFS.length} 欄位`;
+    confidenceBadge.classList.toggle("confidence-ok", filled === FIELD_DEFS.length);
+    confidenceBadge.classList.toggle("confidence-warning", filled < FIELD_DEFS.length);
 
     setStatus("判讀完成");
     showToast(`判讀完成：${filled}/${FIELD_DEFS.length} 個欄位有資料`);
@@ -1656,6 +1670,8 @@ async function processFile(file) {
     console.error(error);
     setStatus("判讀失敗");
     $("confidenceBadge").textContent = "判讀失敗";
+    $("confidenceBadge").classList.remove("confidence-ok");
+    $("confidenceBadge").classList.add("confidence-warning");
     showToast(error.message || "PDF 判讀失敗");
   }
 }
@@ -1687,18 +1703,22 @@ function renderFileList() {
     const name = document.createElement("div");
     name.className = "file-item-name";
     name.textContent = `${index + 1}. ${file.name}`;
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "開啟";
-    btn.addEventListener("click", () => {
+    name.title = "點擊切換並顯示此文件";
+    name.tabIndex = 0;
+    const selectFile = () => {
       state.currentIndex = index;
       renderFileList();
       processFile(file);
+    };
+    name.addEventListener("click", selectFile);
+    name.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectFile();
+      }
     });
 
     item.appendChild(name);
-    item.appendChild(btn);
     list.appendChild(item);
   });
 }
@@ -1726,6 +1746,7 @@ function clearAll() {
   $("googleSheetPreview").textContent = "—";
   $("rawText").textContent = "";
   $("confidenceBadge").textContent = "待判讀";
+  $("confidenceBadge").classList.remove("confidence-ok", "confidence-warning");
   $("fileList").innerHTML = "";
   $("viewerEmpty").classList.remove("hidden");
   $("pageLabel").textContent = "第 1 / 1 頁";
