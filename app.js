@@ -181,7 +181,8 @@ const MODEL_SHEET_MAP = {
   "PA760槍把": "PDA槍把(PA760)",
   "PA768槍把": "PDA槍把(PA768)",
   "DA210": "藍芽標籤機DA210",
-  "TSC ALPHA-40L": "攜帶式藍芽標籤機TSC ALPHA-40L"
+  "TSC ALPHA-40L": "攜帶式藍芽標籤機TSC ALPHA-40L",
+  "Cino A678(RS232)": "無線掃碼槍CinoA678(RS232)"
 };
 
 function getSheetModel(model) {
@@ -189,9 +190,11 @@ function getSheetModel(model) {
   if (MODEL_SHEET_MAP[raw]) return MODEL_SHEET_MAP[raw];
 
   // 容許 PDF 中多一點空白或大小寫差異。
-  const normalized = raw.replace(/\s+/g, " ");
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  const compact = normalized.replace(/\s+/g, "");
   const key = Object.keys(MODEL_SHEET_MAP).find(k =>
-    k.toLowerCase() === normalized.toLowerCase()
+    k.toLowerCase() === normalized.toLowerCase() ||
+    k.replace(/\s+/g, "").toLowerCase() === compact.toLowerCase()
   );
   return key ? MODEL_SHEET_MAP[key] : raw;
 }
@@ -626,7 +629,7 @@ function parseQuotation(text, layoutPages = null) {
   if (repairMatch) {
     const repairPrefix = cleanValue(repairMatch[1]);
     fields.caseNumber = repairMatch[2];
-    fields.model = repairPrefix;
+    fields.model = getSheetModel(repairPrefix);
   }
 
   if (!fields.caseNumber) {
@@ -908,7 +911,9 @@ function parseQuotation(text, layoutPages = null) {
 }
 
 function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitPrices) {
-  const text = cleanValue(buffer).replace(/\s+/g, " ").replace(/(\.[A-Z]{2})\s+([A-Z])\b/gi, "$1$2");
+  const text = cleanValue(buffer)
+    .replace(/\s+/g, " ")
+    .replace(/(\.[A-Z]{2})\s+([A-Z])\b/gi, "$1$2");
 
   // 從右側固定抓：單位、數量、單價、金額；前面才是料號與品名。
   const m = text.match(
@@ -919,11 +924,9 @@ function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitP
 
   let beforeUnit = cleanValue(m[1]);
   let name = "";
+  let partNumber = "";
 
-  // 料號與品名通常以第一個中文字為分界。
-  // 這可以正確處理：
-  // 84-T400-017-003.SR P 印字頭
-  // BENCH SERVICE. 庫內維修
+  // 第一優先：料號與品名中間有中文，沿用原本規則。
   const chineseIndex = beforeUnit.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
   if (chineseIndex >= 0) {
     const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
@@ -932,10 +935,20 @@ function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitP
       beforeUnit = possiblePart;
       name = possibleName;
     }
+  } else {
+    // 第二優先：英文品名，例如：
+    // RBATC1028SRP UC2210_750 UltraCap Capacitor
+    // 這類資料沒有中文字，不能再用「第一個中文字」切割。
+    // 以第一個 token 作為料號，其餘全部視為品名。
+    const tokens = beforeUnit.split(/\s+/).filter(Boolean);
+    if (tokens.length >= 2 && /^[A-Z0-9][A-Z0-9._-]{5,}$/i.test(tokens[0])) {
+      beforeUnit = tokens[0];
+      name = tokens.slice(1).join(" ");
+    }
   }
 
-  // PDF 可能把 .SRP 拆成「.SR P」，合併回正確料號。
-  let partNumber = beforeUnit
+  // 若 PDF 把 .SRP 拆成「.SR P」，合併回正確料號。
+  partNumber = beforeUnit
     .replace(/(\.[A-Z]{2})\s+([A-Z])$/i, "$1$2")
     .replace(/\.+$/, "")
     .trim();
@@ -950,6 +963,38 @@ function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitP
   quantities.push(m[3].trim());
   unitPrices.push(Number(m[4].replace(/,/g, "")).toLocaleString("en-US"));
 }
+
+function normalizePastedSingleLine(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r?\n/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function formatPastedPrices(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map(line => {
+      const raw = line.trim();
+      if (!raw) return "";
+      const compact = raw.replace(/,/g, "");
+      if (/^\d+(?:\.\d+)?$/.test(compact)) {
+        const number = Number(compact);
+        return Number.isFinite(number) ? number.toLocaleString("en-US") : raw;
+      }
+      return raw;
+    })
+    .join("\n");
+}
+
+const MULTI_ROW_FIELDS = new Set([
+  "partNumbers",
+  "products",
+  "quantities",
+  "unitPrices"
+]);
 
 function renderFields() {
   const container = $("resultFields");
@@ -997,6 +1042,42 @@ if (def.type === "textarea") {
       updateQuotationFileName();
       updateGoogleSheetPreview();
     });
+
+    // 手動貼上時：一般判讀欄位自動把換行整併成同一行，避免從 PDF/Excel 貼上後
+    // 畫面看似同一段內容、實際卻含有換行。零件相關欄位則保留換行，
+    // 因為每一行代表一個 Google Sheet 零件資料列。
+    el.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const pasted = event.clipboardData?.getData("text/plain") ?? "";
+      let value = pasted;
+
+      if (def.key === "unitPrices") {
+        value = formatPastedPrices(pasted);
+      } else if (!MULTI_ROW_FIELDS.has(def.key)) {
+        value = normalizePastedSingleLine(pasted);
+      }
+
+      const start = typeof el.selectionStart === "number" ? el.selectionStart : el.value.length;
+      const end = typeof el.selectionEnd === "number" ? el.selectionEnd : el.value.length;
+      el.value = el.value.slice(0, start) + value + el.value.slice(end);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+
+      const cursor = start + value.length;
+      try {
+        el.setSelectionRange(cursor, cursor);
+      } catch (_) {}
+    });
+
+    // 離開「未稅報價」欄位時，再統一補上千分位；不影響多筆零件的換行。
+    if (def.key === "unitPrices") {
+      el.addEventListener("blur", () => {
+        const formatted = formatPastedPrices(el.value);
+        if (formatted !== el.value) {
+          el.value = formatted;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+    }
 
     row.appendChild(label);
     row.appendChild(el);
