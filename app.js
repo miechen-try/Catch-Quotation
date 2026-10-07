@@ -350,6 +350,40 @@ function sanitizeContact(value) {
   return isLikelyStoreName(v) ? v : '';
 }
 
+// 蝦皮特殊倉別判讀：依「聯絡人」直接決定 Google Sheet 的門市名稱。
+// 這是判讀規則，不影響其他一般報價單的門市名稱擷取。
+function mapContactToWarehouse(contact) {
+  const raw = cleanSingleLine(contact);
+  const lower = raw.toLowerCase();
+
+  // SOC 北倉：指定聯絡人
+  if (['emily hsu', 'emma lin', 'benson kuo'].includes(lower)) {
+    return 'SOC北倉';
+  }
+
+  // SOC 南倉：指定聯絡人；「孫健豪/侯淑婷」視為兩個獨立姓名都符合。
+  if (
+    lower === 'tiana' ||
+    lower === 'ann chen' ||
+    raw.includes('孫健豪') ||
+    raw.includes('侯淑婷')
+  ) {
+    return 'SOC南倉';
+  }
+
+  // IM 北倉：只要聯絡人文字中包含指定姓名即可。
+  if (
+    raw.includes('陳俐瑾') ||
+    raw.includes('林嘉祥') ||
+    lower.includes('elaine lei') ||
+    lower.includes('claire pang')
+  ) {
+    return 'IM北倉';
+  }
+
+  return raw;
+}
+
 
 function groupLayoutLines(items, tolerance = 3.5) {
   const sorted = [...(items || [])]
@@ -446,18 +480,36 @@ function extractRepairTableByColumns(layoutPages) {
     }
     xClusters.sort((a, b) => b.count - a.count);
 
-    const issueDataX = xClusters
-      .filter(c => c.x > 150 && c.x < issueHeaderCenter + 20)
+    // 注意：欄位標題是「置中」的，但資料內容通常是「靠左」的。
+    // 因此不能拿「故障現象標題中心」當作機器欄／故障欄的界線。
+    // 例如這份 PDF 的實際資料起點約為：機器 32、故障 195、檢測 405。
+    // 正確做法是先找三個欄位的資料左起點，再取相鄰起點的中點作為界線。
+    const dataClusters = xClusters
+      .filter(c => c.x >= 20 && c.x <= 550)
+      .sort((a, b) => a.x - b.x);
+
+    const issueStart = xClusters
+      .filter(c => c.x > 140 && c.x < issueHeaderCenter + 60)
       .sort((a, b) => Math.abs(a.x - issueHeaderCenter) - Math.abs(b.x - issueHeaderCenter))[0]?.x;
-    const inspectionDataX = xClusters
-      .filter(c => c.x > issueHeaderCenter && c.x < 540)
+
+    const inspectionStart = xClusters
+      .filter(c => c.x > (issueStart ?? issueHeaderCenter - 100) + 60 && c.x < 570)
       .sort((a, b) => Math.abs(a.x - inspectionHeaderCenter) - Math.abs(b.x - inspectionHeaderCenter))[0]?.x;
 
-    // 這份報價單的實際資料起點與標題中心不同（標題置中、資料靠左），
-    // 所以界線優先取「資料起點」的中點，而不是直接用標題中心。
-    const issueStart = issueDataX ?? Math.max(150, issueHeaderCenter - 90);
-    const inspectionStart = inspectionDataX ?? Math.max(issueStart + 100, inspectionHeaderCenter - 90);
-    const issueBoundary = (issueStart + inspectionStart) / 2;
+    // 找故障欄前面的機器欄資料起點。若找不到，才退回既有的固定範圍估算。
+    const machineStart = issueStart != null
+      ? dataClusters
+          .filter(c => c.x < issueStart - 20)
+          .sort((a, b) => Math.abs(a.x - 32) - Math.abs(b.x - 32))[0]?.x
+      : undefined;
+
+    const resolvedMachineStart = machineStart ?? 30;
+    const resolvedIssueStart = issueStart ?? Math.max(resolvedMachineStart + 100, issueHeaderCenter - 90);
+    const resolvedInspectionStart = inspectionStart ?? Math.max(resolvedIssueStart + 100, inspectionHeaderCenter - 90);
+
+    // 兩條真正的欄位界線：機器↔故障、故障↔檢測。
+    const machineBoundary = (resolvedMachineStart + resolvedIssueStart) / 2;
+    const issueBoundary = (resolvedIssueStart + resolvedInspectionStart) / 2;
 
     const rows = lines.filter(line => line.y < headerY - 3 && line.y > bottomY + 3);
     const machineParts = [];
@@ -470,8 +522,8 @@ function extractRepairTableByColumns(layoutPages) {
       const inspection = [];
 
       for (const item of row.items) {
-        if (item.x < issueBoundary) machine.push(item.str);
-        else if (item.x < inspectionStart) problem.push(item.str);
+        if (item.x < machineBoundary) machine.push(item.str);
+        else if (item.x < issueBoundary) problem.push(item.str);
         else inspection.push(item.str);
       }
 
@@ -521,6 +573,9 @@ function parseQuotation(text, layoutPages = null) {
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
   ]));
+
+  // 蝦皮倉別特殊規則：判讀完成後，將指定聯絡人轉成對應門市名稱。
+  fields.contact = mapContactToWarehouse(fields.contact);
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
