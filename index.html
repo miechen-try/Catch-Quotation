@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="精聯電子維修報價單資訊提取工具">
   <title>精聯電子維修報價單資訊提取工具</title>
-  <link rel="stylesheet" href="style.css?v=20261007-4">
+  <link rel="stylesheet" href="style.css?v=20261008-1">
 </head>
 <body>
   <header class="topbar">
@@ -32,7 +32,7 @@
         <span id="fileMeta">—</span>
       </div>
       <div class="toolbar-actions">
-        <button class="secondary-btn" id="copyBtn" type="button"><span class="google-sheet-icon" aria-hidden="true"><span></span><span></span><span></span></span> 複製到 Google Sheet</button>
+        <button class="secondary-btn copy-sheet-btn" id="copyBtn" type="button">▦ 複製到 Google Sheet</button>
         <button class="secondary-btn filename-btn" id="copyFileNameBtn" type="button"><span class="pdf-file-icon">PDF</span> 複製報價單檔名</button>
         <button class="secondary-btn danger-btn" id="clearBtn" type="button">清除</button>
       </div>
@@ -50,11 +50,6 @@
             <button id="nextPageBtn" type="button">›</button>
           </div>
         </div>
-        <div class="pdf-zoom-controls" aria-label="PDF 縮放控制">
-            <button id="pdfZoomOutBtn" type="button" title="縮小">−</button>
-            <span id="pdfZoomLabel">100%</span>
-            <button id="pdfZoomInBtn" type="button" title="放大">＋</button>
-          </div>
         <div class="pdf-viewer" id="pdfViewer">
           <canvas id="pdfCanvas"></canvas>
           <div class="viewer-empty" id="viewerEmpty">尚未載入 PDF</div>
@@ -71,16 +66,20 @@
         </div>
 
         <div id="resultFields"></div>
-        <details class="collapsible-block" id="quotationNameBlock">
-          <summary><span class="collapse-sign">+</span><strong>報價單檔名</strong></summary>
+        <div class="quotation-name-block">
+          <div class="quotation-name-label">報價單檔名</div>
           <div id="quotationFileName" class="quotation-name-value">—</div>
-        </details>
+        </div>
 
-        <details class="collapsible-block" id="sheetCopyBlock">
-          <summary><span class="collapse-sign">+</span><strong>Google Sheet 一鍵貼上資料</strong></summary>
-          <div class="sheet-copy-hint">請在 Google Sheet 的 B 欄選取第一個儲存格後貼上；E 欄會保留空白，多個零件會自動拆成多列。</div>
+        <div class="sheet-copy-block">
+          <div class="sheet-copy-header">
+            <div>
+              <div class="quotation-name-label">Google Sheet 一鍵貼上資料</div>
+              <div class="sheet-copy-hint">請在 Google Sheet 的 B 欄選取第一個儲存格後貼上；E 欄會保留空白，多個零件會自動拆成多列。</div>
+            </div>
+          </div>
           <pre id="googleSheetPreview" class="sheet-copy-preview">—</pre>
-        </details>
+        </div>
 
 
         <div class="raw-toggle">
@@ -125,6 +124,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <script src="app.js?v=20261007-4"></script>
+  <script src="app.js?v=20261008-1"></script>
 </body>
 </html>

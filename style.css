@@ -8,8 +8,8 @@
   --line: #dfe4ea;
   --text: #26313b;
   --muted: #71808d;
-  --primary: #6f9fc0;
-  --primary-dark: #5c88aa;
+  --primary: #1677c8;
+  --primary-dark: #0f5f9f;
   --danger: #c94b4b;
   --shadow: 0 8px 24px rgba(25, 45, 65, 0.07);
   --radius: 14px;
@@ -109,8 +109,8 @@ button, input, textarea {
 }
 
 .primary-btn {
-  background: #6f9fc0;
-  color: #ffffff;
+  background: var(--primary);
+  color: white;
   padding: 11px 22px;
   font-weight: 700;
 }
@@ -120,111 +120,25 @@ button, input, textarea {
 }
 
 .secondary-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  line-height: 1.2;
-  vertical-align: middle;
-  background: #6fa88a;
-  color: #FFFFFF;
+  background: #eef3f7;
+  color: #33414c;
   padding: 9px 14px;
   font-weight: 600;
 }
 
-.google-sheet-icon {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 3px);
-  gap: 2px;
-  width: 22px;
-  height: 22px;
-  padding: 4px;
-  margin-right: 4px;
-  box-sizing: border-box;
-  vertical-align: middle;
-  border-radius: 3px;
-  background: #FFFFFF;
+.copy-sheet-btn {
+  background: #34A853;
+  color: #FFFFFF;
 }
 
-.google-sheet-icon span {
-  display: block;
-  border: 1px solid #6fa88a;
-  background: #FFFFFF;
-}
-
-.update-btn {
-  background: #FFFFFF;
-  color: #D32F2F;
-  border: 1px solid #D32F2F;
-}
-
-.update-btn:hover {
-  background: #FFF5F5;
-  color: #B71C1C;
-}
-
-.field-updated {
-  background: #fff4b8;
-  border-radius: 8px;
-  padding: 6px 8px;
-  margin-left: -8px;
-  margin-right: -8px;
-}
-
-.field-missing {
-  background: #fdecec;
-  border-radius: 8px;
-  padding: 6px 8px;
-  margin-left: -8px;
-  margin-right: -8px;
-}
-
-.field-missing .field-textarea,
-.field-missing .field-input {
-  border-color: #e3a2a2;
-  background: #fff8f8;
-}
-
-.field-missing-text {
-  grid-column: 2;
-  color: #c43d3d;
-  font-size: 11px;
-  font-weight: 700;
-  margin-top: -6px;
-}
-
-/* 數量異常只顯示小字，不再整列著色；空值仍由 .field-missing 統一處理。 */
-.quantity-warning {
-  background: transparent;
-  padding: 9px 0;
-  margin-left: 0;
-  margin-right: 0;
-}
-
-.quantity-warning-text {
-  grid-column: 2;
-  color: #c43d3d;
-  background: #fdecec;
-  display: inline-block;
-  width: fit-content;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  margin-top: -6px;
-}
-
-.manual-modified-text {
-  grid-column: 2;
-  color: #a06b00;
-  font-size: 11px;
-  font-weight: 700;
-  margin-top: -6px;
+.copy-sheet-btn:hover {
+  background: #2d9248;
+  color: #FFFFFF;
 }
 
 
 .secondary-btn:hover {
-  background: #5d9477;
+  background: #e3ebf1;
 }
 
 .danger-btn {
@@ -238,12 +152,12 @@ button, input, textarea {
 }
 
 .filename-btn {
-  background: #6e86a3;
+  background: #123B6D;
   color: #FFFFFF;
 }
 
 .filename-btn:hover {
-  background: #5c718c;
+  background: #0D2D52;
   color: #FFFFFF;
 }
 
@@ -303,7 +217,7 @@ button, input, textarea {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(430px, 0.75fr);
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 0.95fr);
   gap: 18px;
   margin-top: 18px;
 }
@@ -359,28 +273,23 @@ button, input, textarea {
 }
 
 .pdf-viewer {
-  height: 720px;
-  min-height: 520px;
-  max-height: calc(100vh - 250px);
+  min-height: 650px;
   background: #e9edf1;
   border-radius: 10px;
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   padding: 18px;
   overflow: auto;
   position: relative;
-  overscroll-behavior: contain;
 }
 
 #pdfCanvas {
   display: block;
   background: white;
   box-shadow: 0 2px 12px rgba(0,0,0,.12);
-  width: auto;
+  max-width: 100%;
   height: auto;
-  max-width: none;
-  flex: 0 0 auto;
-  user-select: none;
-  -webkit-user-drag: none;
 }
 
 .viewer-empty {
@@ -435,22 +344,12 @@ button, input, textarea {
 }
 
 .confidence {
-  background: #edf2f5 !important;
-  color: #667680 !important;
+  background: #edf7ee !important;
+  color: #2f7a3d !important;
   padding: 5px 9px;
   border-radius: 999px;
   font-size: 12px !important;
   font-weight: 700;
-}
-
-.confidence-ok {
-  background: #e8f4ea !important;
-  color: #3d7f4c !important;
-}
-
-.confidence-warning {
-  background: #fdecec !important;
-  color: #c43d3d !important;
 }
 
 .raw-toggle {
@@ -504,18 +403,16 @@ button, input, textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1 1 auto;
+}
+
+.file-item button {
+  flex: 0 0 auto;
+  border: 0;
+  background: #edf3f7;
+  padding: 7px 10px;
+  border-radius: 7px;
   cursor: pointer;
-  border-radius: 6px;
-  padding: 4px 6px;
 }
-
-.file-item-name:hover,
-.file-item-name:focus {
-  background: #f2f6f9;
-  outline: none;
-}
-
 
 .field-tags {
   display: flex;
@@ -569,11 +466,6 @@ button, input, textarea {
   .pdf-viewer,
   .result-panel {
     min-height: 400px;
-  }
-
-  .pdf-viewer {
-    height: 620px;
-    max-height: calc(100vh - 210px);
   }
 }
 
@@ -649,83 +541,47 @@ button, input, textarea {
   line-height: 1.5;
 }
 
-/* 20261006 PDF 縮放與收合區塊 */
-.pdf-zoom-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 0 0 8px;
+.confidence.incomplete {
+  background: #fde8e8 !important;
+  color: #c62828 !important;
 }
-.pdf-zoom-controls button {
-  min-width: 34px;
-  height: 32px;
-  border: 1px solid #d7dfe5;
-  background: #fff;
-  border-radius: 7px;
-  cursor: pointer;
-  font-size: 17px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.pdf-zoom-controls button:hover { background: #f4f7f9; }
-#pdfZoomLabel {
-  min-width: 52px;
-  text-align: center;
-  font-size: 12px;
-  color: #52616d;
-  font-weight: 700;
-}
-.pdf-viewer {
-  height: 720px;
-  min-height: 520px;
-  max-height: calc(100vh - 250px);
-  cursor: grab;
-  overflow: auto;
-  display: block;
-  position: relative;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  overscroll-behavior: contain;
-}
-.pdf-viewer.is-panning { cursor: grabbing; }
-.pdf-viewer canvas { display: block; margin: 0 auto; }
 
-.collapsible-block {
-  margin-top: 14px;
-  border-top: 1px solid #edf0f3;
-  border-bottom: 1px solid #edf0f3;
-  padding: 0;
+.field-row.field-error {
+  background: #fff0f0;
+  border-radius: 8px;
+  padding: 8px;
+  margin: -8px -8px 8px;
 }
-.collapsible-block summary {
-  list-style: none;
-  cursor: pointer;
-  min-height: 46px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  user-select: none;
+
+.field-row.field-manual {
+  background: #fff8cc;
+  border-radius: 8px;
+  padding: 8px;
+  margin: -8px -8px 8px;
 }
-.collapsible-block summary::-webkit-details-marker { display: none; }
-.collapse-sign {
-  width: 20px;
-  height: 20px;
-  border: 1px solid #cfd8df;
-  border-radius: 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  line-height: 1;
+
+.field-note,
+.quantity-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
 }
-.collapsible-block[open] .collapse-sign { font-size: 0; }
-.collapsible-block[open] .collapse-sign::before { content: "−"; font-size: 15px; }
-.collapsible-block .quotation-name-value,
-.collapsible-block .sheet-copy-preview,
-.collapsible-block .sheet-copy-hint {
-  margin-bottom: 12px;
+
+.field-error .field-note {
+  color: #c62828;
+  background: #ffdede;
+}
+
+.field-manual .field-note {
+  color: #8a6d00;
+  background: #ffe889;
+}
+
+.quantity-note {
+  color: #c62828;
+  background: #ffdede;
 }

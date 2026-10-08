@@ -19,8 +19,8 @@
  */
 
 const FIELD_DEFS = [
-  { key: "caseNumber", label: "案件編號", type: "textarea" },
-  { key: "srNumber", label: "SR單號", type: "textarea" },
+  { key: "caseNumber", label: "案件編號", type: "input" },
+  { key: "srNumber", label: "SR單號", type: "input" },
   { key: "fillDate", label: "填寫日期", type: "input" },
   { key: "contact", label: "門市名稱", type: "input" },
   { key: "model", label: "報修設備", type: "textarea" },
@@ -43,12 +43,8 @@ const state = {
   currentFile: null,
   fields: emptyFields(),
   rawText: "",
-  layout: null,
   ocrUsed: false,
-  originalFields: emptyFields(),
-  modifiedKeys: new Set(),
-  updated: false,
-  pdfZoom: 1.0
+  initialValues: emptyFields()
 };
 
 function emptyFields() {
@@ -149,6 +145,8 @@ function cleanIssueText(value, serial = "") {
   // 中文句子因 PDF 換行產生的空白要合併，例如「無 法」→「無法」。
   result = result.replace(/([\u3400-\u4dbf\u4e00-\u9fff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$1");
 
+  result = result.replace(/(\d)\s+\./g, "$1.");
+  result = result.replace(/\.\s+([A-Z]{2,4})(?=\s|$)/g, ".$1");
   return result.replace(/[ \t]+/g, " ").trim();
 }
 function cleanProductName(value) {
@@ -172,7 +170,6 @@ const MODEL_SHEET_MAP = {
   "MS838": "有線掃碼槍MS838",
   "MS842": "無線掃瑪槍MS842P",
   "MS852": "無線掃碼槍MS852P",
-  "MS852P": "無線掃碼槍MS852P",
   "RP-700": "熱感應機RP-700",
   "Sewoo": "熱感應機Sewoo",
   "SBarco": "標籤機SBarco",
@@ -193,11 +190,11 @@ function getSheetModel(model) {
   if (MODEL_SHEET_MAP[raw]) return MODEL_SHEET_MAP[raw];
 
   // 容許 PDF 中多一點空白或大小寫差異。
-  const normalized = raw.replace(/\s+/g, " ").trim();
-  const compact = normalized.replace(/\s+/g, "");
+  const normalized = raw.replace(/\s+/g, " ");
+  const compact = normalized.replace(/\s+/g, "").toLowerCase();
   const key = Object.keys(MODEL_SHEET_MAP).find(k =>
     k.toLowerCase() === normalized.toLowerCase() ||
-    k.replace(/\s+/g, "").toLowerCase() === compact.toLowerCase()
+    k.replace(/\s+/g, "").toLowerCase() === compact
   );
   return key ? MODEL_SHEET_MAP[key] : raw;
 }
@@ -212,97 +209,83 @@ function joinForSheet(value) {
 
 function buildQuotationFileName() {
   const f = getEditedFields();
+
   const contact = (f.contact || "").trim();
-  const models = normalizeDeviceFieldLines(f.model);
-  const srNumbers = normalizeDeviceFieldLines(f.srNumber);
+  const models = String(f.model || "")
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean);
+  const srs = String(f.srNumber || "")
+    .split(/\r?\n|[/、,，]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
 
-  if (!contact && !models.length && !srNumbers.length) return "";
+  if (!contact && !models.length && !srs.length) return "";
 
-  // 多筆 SR／多台相同設備時，型號只取一次，SR 單號依序列出。
-  // 例如：SOC北倉_標籤機TC200-3965352、3965354
-  const sheetModel = getSheetModel(models[0] || "");
-  const srText = srNumbers.join("、");
-  const baseName = [
-    contact,
-    sheetModel && srText ? `${sheetModel}-${srText}` : sheetModel || srText
-  ]
-    .filter(Boolean)
-    .join("_");
+  const sheetModels = [...new Set(models.map(getSheetModel).filter(Boolean))];
+  const modelText = sheetModels.join("、");
+  const srText = [...new Set(srs)].join("、");
 
-  return baseName || "";
+  // 多筆 SR（同一份報價單）時：門市名稱_報修設備(只取一次型號)-SR1、SR2、...
+  const modelPart = modelText ? modelText.split("、")[0] : "";
+  const body = modelPart && srText
+    ? `${modelPart}-${srText}`
+    : modelPart || srText;
+
+  const baseName = [contact, body].filter(Boolean).join("_");
+  return baseName ? `${baseName}.pdf` : "";
 }
 
 function buildGoogleSheetRows() {
   const f = getEditedFields();
 
-  // Google Sheet 從 C 欄開始：
-  // C SR單號
-  // D 填寫日期
-  // E 保留空白
-  // F 門市名稱
-  // G 報修設備
-  // H 設備序號
-  // I 故障原因
-  // J 廠商檢測回覆
-  // K 收費方式（預設：耗材收費）
-  // L 更換零件料號
-  // M 更換零件品名
-  // N 更換零件數量
-  // O 未稅報價
-  //
-  // 每一個零件各自一列；共同欄位會在每一列重複。
-
   const splitRows = (value) => String(value || "")
     .split(/\r?\n/)
-    .map(x => x.trim());
+    .map(x => x.trim())
+    .filter(Boolean);
 
-  const caseNumbers = splitRows(f.caseNumber).filter(Boolean);
-  const srNumbers = splitRows(f.srNumber).filter(Boolean);
-  const parts = splitRows(f.partNumbers).filter(Boolean);
-  const names = splitRows(f.products).filter(Boolean);
-  const quantities = splitRows(f.quantities).filter(Boolean);
-  const prices = splitRows(f.unitPrices).filter(Boolean);
-  const models = splitRows(f.model).filter(Boolean);
-  const serials = splitRows(f.serial).filter(Boolean);
-  const problems = splitRows(f.problem).filter(Boolean);
-  const inspections = splitRows(f.inspection).filter(Boolean);
+  const parts = splitRows(f.partNumbers);
+  const names = splitRows(f.products);
+  const quantities = splitRows(f.quantities);
+  const prices = splitRows(f.unitPrices);
+  const models = splitRows(f.model);
+  const serials = splitRows(f.serial);
+  const problems = splitRows(f.problem);
+  const inspections = splitRows(f.inspection);
+  const cases = splitRows(f.caseNumber);
+  const srs = splitRows(f.srNumber);
 
-  const deviceCount = Math.max(caseNumbers.length, models.length, serials.length, problems.length, inspections.length);
-  const shouldSplitQuantityByDevice = deviceCount > 1 && quantities.length > 0 &&
-    quantities.length === parts.length && quantities.every(q => Number(String(q).replace(/,/g, "")) === deviceCount);
+  const rowCount = Math.max(
+    parts.length, names.length, quantities.length, prices.length,
+    models.length, serials.length, problems.length, inspections.length,
+    cases.length, srs.length, 1
+  );
 
-  const rowCount = shouldSplitQuantityByDevice
-    ? deviceCount
-    : Math.max(
-        parts.length, names.length, quantities.length, prices.length,
-        caseNumbers.length, srNumbers.length, models.length, serials.length, problems.length, inspections.length, 1
-      );
+  const pick = (arr, i) => arr[i] || (arr.length === 1 ? arr[0] : "");
   const rows = [];
 
   for (let i = 0; i < rowCount; i++) {
-    const partIndex = shouldSplitQuantityByDevice ? 0 : i;
     const row = [
-      caseNumbers[i] || caseNumbers[0] || f.caseNumber,
-      srNumbers[i] || srNumbers[0] || f.srNumber,
+      pick(cases, i),
+      pick(srs, i),
       f.fillDate,
       "",
       f.contact,
-      getSheetModel(models[i] || models[0] || ""),
-      serials[i] || serials[0] || "",
-      problems[i] || problems[0] || "",
-      inspections[i] || inspections[0] || "",
+      getSheetModel(pick(models, i)),
+      pick(serials, i),
+      pick(problems, i),
+      pick(inspections, i),
       f.feeType || "耗材收費",
-      parts[partIndex] || "",
-      names[partIndex] || "",
-      shouldSplitQuantityByDevice ? "1" : (quantities[i] || ""),
-      prices[partIndex] || ""
+      pick(parts, i),
+      pick(names, i),
+      pick(quantities, i),
+      pick(prices, i)
     ];
 
     rows.push(
-      row
-        .map(value => String(value ?? "")
-          .replace(/\t/g, " ")
-          .replace(/\r?\n/g, " "))
+      row.map(value => String(value ?? "")
+        .replace(/\t/g, " ")
+        .replace(/\r?\n/g, " "))
         .join("\t")
     );
   }
@@ -340,481 +323,122 @@ function sectionBetween(text, starts, ends) {
   return cleanValue(m?.[1] || "");
 }
 
-function isLikelyStoreName(value) {
-  const v = cleanSingleLine(value);
-  if (!v) return false;
-
-  // 明顯是地址、電話、公司/人員資訊時，不當作門市名稱。
-  if (/[縣市區鄉鎮路街巷弄號樓室段村里鄰|市話|電話]/.test(v)) return false;
-  if (/(?:先生|小姐|女士|先生小姐|聯絡人|承辦|收件人)/.test(v)) return false;
-  if (/(?:@|\b09\d{8}\b|\b0\d{1,2}-\d{6,8}\b)/.test(v)) return false;
-  if (/\b\d{3,}\b/.test(v) && !/智取店|門市|店/.test(v)) return false;
-
-  // 純 2~4 個中文字、沒有店家關鍵字，通常是人名；避免把它帶進判讀結果。
-  const compact = v.replace(/[\s·•・]/g, '');
-  if (/^[\u3400-\u4dbf\u4e00-\u9fff]{2,4}$/.test(compact) && !/(?:店|門市|分店|據點|智取)/.test(compact)) {
-    return false;
-  }
-
-  return true;
-}
-
-function sanitizeContact(value) {
-  const v = cleanSingleLine(value);
-  return isLikelyStoreName(v) ? v : '';
-}
-
-// 蝦皮特殊倉別判讀：依「聯絡人」直接決定 Google Sheet 的門市名稱。
-// 這是判讀規則，不影響其他一般報價單的門市名稱擷取。
-function mapContactToWarehouse(contact) {
-  const raw = cleanSingleLine(contact);
-  const lower = raw.toLowerCase();
-
-  // 蝦皮倉別規則一律使用「包含」判斷。
-  // 例如「Emily Hsu / 其他資訊」或「陳俐瑾(採購)」都要能命中。
-
-  // SOC 北倉
-  if (
-    lower.includes('emily hsu') ||
-    lower.includes('emma lin') ||
-    lower.includes('benson kuo')
-  ) {
-    return 'SOC北倉';
-  }
-
-  // SOC 南倉
-  if (
-    lower.includes('tiana') ||
-    lower.includes('ann chen') ||
-    raw.includes('孫健豪') ||
-    raw.includes('侯淑婷')
-  ) {
-    return 'SOC南倉';
-  }
-
-  // IM 北倉
-  if (
-    raw.includes('陳俐瑾') ||
-    raw.includes('林嘉祥') ||
-    lower.includes('elaine lei') ||
-    lower.includes('claire pang')
-  ) {
-    return 'IM北倉';
-  }
-
-  return raw;
-}
-
-
-function groupLayoutLines(items, tolerance = 3.5) {
-  const sorted = [...(items || [])]
-    .filter(item => item && item.str && item.str.trim())
-    .sort((a, b) => (b.y - a.y) || (a.x - b.x));
-
-  const groups = [];
-  for (const item of sorted) {
-    let group = groups.find(g => Math.abs(g.y - item.y) <= tolerance);
-    if (!group) {
-      group = { y: item.y, items: [] };
-      groups.push(group);
-    }
-    group.items.push(item);
-    group.y = group.items.reduce((sum, x) => sum + x.y, 0) / group.items.length;
-  }
-
-  return groups
-    .sort((a, b) => b.y - a.y)
-    .map(group => ({
-      y: group.y,
-      items: group.items.sort((a, b) => a.x - b.x),
-      text: group.items
-        .sort((a, b) => a.x - b.x)
-        .map(item => item.str)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim()
-    }));
-}
-
-function layoutLineContains(line, pattern) {
-  return pattern.test(String(line?.text || ""));
+function normalizeRepairModel(raw) {
+  const value = String(raw || "").replace(/\s+/g, " ").trim();
+  const m = value.match(/(Cino\s*A678\s*\(RS232\)|MS\d+|PA\d+(?:槍把)?|TC\d+|RP-?\d+|ZD\d+|DA\d+|SBarco(?:\(含裁刀\))?|Sewoo|TSC\s+ALPHA-40L)/i);
+  return m ? m[1] : value;
 }
 
 function extractRepairTableByColumns(layoutPages) {
-  if (!Array.isArray(layoutPages) || !layoutPages.length) return null;
+  const allRows = [];
+  if (!Array.isArray(layoutPages)) return allRows;
 
-  for (const pageItems of layoutPages) {
-    const lines = groupLayoutLines(pageItems);
-    const header = lines.find(line =>
-      /機\s*器\s*品\s*號\s*\/\s*序\s*號/i.test(line.text) &&
-      /故\s*障\s*現\s*象/i.test(line.text) &&
-      /檢\s*測\s*說\s*明/i.test(line.text)
-    );
+  for (const page of layoutPages) {
+    const items = Array.isArray(page) ? page : [];
+    if (!items.length) continue;
 
+    const lines = [];
+    const sorted = [...items].sort((a, b) => {
+      const dy = a.y - b.y;
+      return Math.abs(dy) > 4.5 ? dy : a.x - b.x;
+    });
+
+    for (const item of sorted) {
+      if (!item.str || !item.str.trim()) continue;
+      let line = lines.find(l => Math.abs(l.y - item.y) <= 4.5);
+      if (!line) {
+        line = { y: item.y, items: [] };
+        lines.push(line);
+      }
+      line.items.push(item);
+    }
+
+    lines.sort((a, b) => a.y - b.y);
+
+    const header = lines.find(line => {
+      const txt = line.items.map(x => x.str).join("").replace(/\s+/g, "");
+      return /機器品號.*序號/.test(txt) && /故障現象/.test(txt) && /檢測說明/.test(txt);
+    });
     if (!header) continue;
 
-    const headerY = header.y;
-    const repairLine = lines.find(line =>
-      line.y < headerY && /客\s*戶\s*維\s*修\s*單\s*號/i.test(line.text)
-    );
-    const bottomY = repairLine ? repairLine.y : headerY - 90;
+    const machineHead = header.items.find(x => /機/.test(x.str));
+    const problemHead = header.items.find(x => /故/.test(x.str));
+    const inspectionHead = header.items.find(x => /檢/.test(x.str));
+    if (!machineHead || !problemHead || !inspectionHead) continue;
 
-    // PDF 的欄位標題常由多個字元組成，因此用文字項目的 x 範圍
-    // 找出三個欄位標題的中心，再以資料列實際 x 起點微調欄位界線。
-    const headerItems = header.items;
-    const findSpan = (regex) => {
-      const matched = headerItems.filter(item => regex.test(item.str));
-      if (!matched.length) return null;
-      return {
-        left: Math.min(...matched.map(item => item.x)),
-        right: Math.max(...matched.map(item => item.x + (item.width || 0))),
-        center: (Math.min(...matched.map(item => item.x)) + Math.max(...matched.map(item => item.x + (item.width || 0)))) / 2
-      };
-    };
+    const xMachine = machineHead.x;
+    const xProblem = problemHead.x;
+    const xInspection = inspectionHead.x;
+    const b1 = (xMachine + xProblem) / 2;
+    const b2 = (xProblem + xInspection) / 2;
 
-    // 因為「故障現象／檢測說明」在 PDF 中通常是逐字文字項目，
-    // 這裡直接依 x 位置搜尋關鍵字字元群。
-    const issueChars = headerItems.filter(item => /故|障|現|象/.test(item.str));
-    const inspectionChars = headerItems.filter(item => /檢|測|說|明/.test(item.str));
-    if (!issueChars.length || !inspectionChars.length) continue;
-
-    const issueHeaderCenter = (
-      Math.min(...issueChars.map(item => item.x)) +
-      Math.max(...issueChars.map(item => item.x + (item.width || 0)))
-    ) / 2;
-    const inspectionHeaderCenter = (
-      Math.min(...inspectionChars.map(item => item.x)) +
-      Math.max(...inspectionChars.map(item => item.x + (item.width || 0)))
-    ) / 2;
-
-    // 找出資料區中最常見的文字左起點，通常就是三個欄位的實際內容起點。
-    const dataItems = pageItems.filter(item => item.y < headerY - 3 && item.y > bottomY + 3);
-    const xClusters = [];
-    for (const item of dataItems) {
-      if (!item.str || !item.str.trim()) continue;
-      let cluster = xClusters.find(x => Math.abs(x.x - item.x) <= 4);
-      if (!cluster) {
-        cluster = { x: item.x, count: 0 };
-        xClusters.push(cluster);
-      }
-      cluster.count += 1;
-    }
-    xClusters.sort((a, b) => b.count - a.count);
-
-    // 注意：欄位標題是「置中」的，但資料內容通常是「靠左」的。
-    // 因此不能拿「故障現象標題中心」當作機器欄／故障欄的界線。
-    // 例如這份 PDF 的實際資料起點約為：機器 32、故障 195、檢測 405。
-    // 正確做法是先找三個欄位的資料左起點，再取相鄰起點的中點作為界線。
-    const dataClusters = xClusters
-      .filter(c => c.x >= 20 && c.x <= 550)
-      .sort((a, b) => a.x - b.x);
-
-    const issueStart = xClusters
-      .filter(c => c.x > 140 && c.x < issueHeaderCenter + 60)
-      .sort((a, b) => Math.abs(a.x - issueHeaderCenter) - Math.abs(b.x - issueHeaderCenter))[0]?.x;
-
-    const inspectionStart = xClusters
-      .filter(c => c.x > (issueStart ?? issueHeaderCenter - 100) + 60 && c.x < 570)
-      .sort((a, b) => Math.abs(a.x - inspectionHeaderCenter) - Math.abs(b.x - inspectionHeaderCenter))[0]?.x;
-
-    // 找故障欄前面的機器欄資料起點。若找不到，才退回既有的固定範圍估算。
-    const machineStart = issueStart != null
-      ? dataClusters
-          .filter(c => c.x < issueStart - 20)
-          .sort((a, b) => Math.abs(a.x - 32) - Math.abs(b.x - 32))[0]?.x
-      : undefined;
-
-    const resolvedMachineStart = machineStart ?? 30;
-    const resolvedIssueStart = issueStart ?? Math.max(resolvedMachineStart + 100, issueHeaderCenter - 90);
-    const resolvedInspectionStart = inspectionStart ?? Math.max(resolvedIssueStart + 100, inspectionHeaderCenter - 90);
-
-    // 兩條真正的欄位界線：機器↔故障、故障↔檢測。
-    const machineBoundary = (resolvedMachineStart + resolvedIssueStart) / 2;
-    const issueBoundary = (resolvedIssueStart + resolvedInspectionStart) / 2;
-
-    const rows = lines.filter(line => line.y < headerY - 3 && line.y > bottomY + 3);
-    const machineParts = [];
-    const problemParts = [];
-    const inspectionParts = [];
-
-    for (const row of rows) {
-      const machine = [];
-      const problem = [];
-      const inspection = [];
-
-      for (const item of row.items) {
-        if (item.x < machineBoundary) machine.push(item.str);
-        else if (item.x < issueBoundary) problem.push(item.str);
-        else inspection.push(item.str);
-      }
-
-      const machineText = machine.join(" ").replace(/\s+/g, " ").trim();
-      const problemText = problem.join(" ").replace(/\s+/g, " ").trim();
-      const inspectionText = inspection.join(" ").replace(/\s+/g, " ").trim();
-
-      if (machineText) machineParts.push({ y: row.y, text: machineText });
-      if (problemText) problemParts.push({ y: row.y, text: problemText });
-      if (inspectionText) inspectionParts.push({ y: row.y, text: inspectionText });
-    }
-
-    // 設備序號：除了原本的 UTA / UT / 純數字格式，也支援
-    // C6261408 這類「英文字母 + 6 碼以上數字」的序號。
-    // 由於機器品號與設備序號通常同在同一欄，先排除第一個機器品號，
-    // 再從同欄後續文字尋找序號，避免把 GPHS67811003K03.001 當成序號。
-    const machineCode = machineParts
-      .map(x => x.text.match(/\b[A-Z0-9][A-Z0-9._-]{7,}\b/i)?.[0])
-      .find(Boolean) || "";
-
-    const serialCandidates = [];
-    for (const part of machineParts) {
-      const matches = part.text.match(/\b[A-Z][A-Z0-9._-]{5,}\b|\b\d{7,}\b/gi) || [];
-      for (const candidate of matches) {
-        if (candidate.toLowerCase() === machineCode.toLowerCase()) continue;
-        if (!serialCandidates.some(x => x.toLowerCase() === candidate.toLowerCase())) {
-          serialCandidates.push(candidate);
-        }
-      }
-    }
-
-    const serial =
-      machineParts
-        .map(x => x.text.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i)?.[1])
-        .find(Boolean) ||
-      serialCandidates.find(candidate => /^[A-Z]\d{6,}$/i.test(candidate)) ||
-      serialCandidates.find(candidate => /^\d{7,}$/.test(candidate)) ||
-      serialCandidates[0] ||
-      "";
-
-    const problem = cleanIssueText(
-      problemParts
-        .map(x => x.text)
-        .filter(x => !/^\d+$/.test(x))
-        .join(" "),
-      serial
+    const startIndex = lines.indexOf(header) + 1;
+    const endIndex = lines.findIndex((line, i) =>
+      i > startIndex && line.items.some(x => /客戶維修單號/.test(x.str.replace(/\s+/g, "")))
     );
 
-    const inspection = cleanIssueText(
-      inspectionParts
-        .map(x => x.text)
-        .join(" "),
-      serial
-    );
-
-    // 依「機器品號」的出現位置建立一對一設備紀錄。
-    // 同一台設備的序號可能在下一行，因此先建立設備，再把後續序號
-    // 與故障／檢測欄位歸回同一筆。這可處理同一張報價單同時有 2 台以上設備。
-    const records = [];
+    const rowGroups = [];
     let current = null;
 
-    for (const row of rows) {
-      const machine = [];
-      const problem = [];
-      const inspection = [];
+    for (let i = startIndex; i < (endIndex >= 0 ? endIndex : lines.length); i++) {
+      const line = lines[i];
+      const ordered = [...line.items].sort((a, b) => a.x - b.x);
+      const text = ordered.map(x => x.str).join("").trim();
+      if (!text) continue;
 
-      for (const item of row.items) {
-        if (item.x < machineBoundary) machine.push(item.str);
-        else if (item.x < issueBoundary) problem.push(item.str);
-        else inspection.push(item.str);
-      }
+      const machineTexts = ordered.filter(x => x.x < b1).map(x => x.str).join("").trim();
+      const looksLikeMachine = /(?:MS\d+|PA\d+|RP-?\d+|ZD\d+|DA\d+|TC\d+|TSC|SBarco|Sewoo|Cino\s*A678)/i.test(machineTexts);
 
-      const machineText = machine.join(" ").replace(/\s+/g, " ").trim();
-      const problemText = problem.join(" ").replace(/\s+/g, " ").trim();
-      const inspectionText = inspection.join(" ").replace(/\s+/g, " ").trim();
-      if (!machineText && !problemText && !inspectionText) continue;
-
-      const machineCodeMatch = machineText.match(/\b[A-Z0-9][A-Z0-9._-]{7,}\b/i);
-      const machineCode = machineCodeMatch?.[0] || "";
-
-      if (machineCode) {
-        current = { machineCode, serial: "", problem: "", inspection: "" };
-        records.push(current);
+      if (looksLikeMachine) {
+        if (current) rowGroups.push(current);
+        current = { machine: [], problem: [], inspection: [], firstY: line.y };
       }
 
       if (!current) continue;
 
-      const machineWithoutCode = machineText
-        .replace(machineCode ? new RegExp(escapeRegExp(machineCode), "i") : /$^/, " ")
-        .replace(/^\d+\s+/, "")
+      for (const item of ordered) {
+        if (item.x < b1) current.machine.push(item.str);
+        else if (item.x < b2) current.problem.push(item.str);
+        else current.inspection.push(item.str);
+      }
+    }
+    if (current) rowGroups.push(current);
+
+    for (const row of rowGroups) {
+      const machineText = row.machine.join(" ").replace(/\s+/g, " ").trim();
+      const problemText = row.problem.join(" ").replace(/\s+/g, " ").trim();
+      const inspectionText = row.inspection.join(" ").replace(/\s+/g, " ").trim();
+      if (!machineText) continue;
+
+      const model = normalizeRepairModel(machineText);
+      const serialMatch = machineText.match(/(?:^|\s)(UTA[A-Z0-9]{6,}|UT[A-Z0-9]{6,}|C[A-Z0-9]{6,}|\d{8,})(?:\s|$)/i);
+      const serial = serialMatch ? serialMatch[1] : "";
+      if (!model || !serial) continue;
+
+      const rowSr = inspectionText.match(/\((\d{6,})\)/)?.[1] || "";
+      const inspection = inspectionText
+        .replace(/\(\d{6,}\)/g, "")
+        .replace(/[\u3400-\u4dbf\u4e00-\u9fff]\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$&")
         .replace(/\s+/g, " ")
         .trim();
 
-      if (machineWithoutCode) {
-        const serialMatches = machineWithoutCode.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|[A-Z]{1,3}\d{6,}(?:-[A-Z0-9]+)?|\d{7,})\b/gi) || [];
-        for (const candidate of serialMatches) {
-          if (!current.serial && candidate.toLowerCase() !== current.machineCode.toLowerCase()) {
-            current.serial = candidate;
-            break;
-          }
-        }
-      }
+      const problem = problemText
+        .replace(/\s+/g, " ")
+        .replace(/([\u3400-\u4dbf\u4e00-\u9fff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$1")
+        .trim();
 
-      if (problemText && !/^\d+$/.test(problemText)) {
-        current.problem = cleanIssueText(
-          [current.problem, problemText].filter(Boolean).join(" "),
-          current.serial
-        );
-      }
-      if (inspectionText) {
-        current.inspection = cleanIssueText(
-          [current.inspection, inspectionText].filter(Boolean).join(" "),
-          current.serial
-        );
-      }
-    }
-
-    // 若上面的逐設備分組成功，優先回傳完整 records；單筆資料也沿用相同格式。
-    const validRecords = records.filter(r => r.serial || r.problem || r.inspection);
-    if (validRecords.length) {
-      return {
-        serial: validRecords.map(r => r.serial).filter(Boolean).join("\n"),
-        problem: validRecords.map(r => r.problem).filter(Boolean).join("\n"),
-        inspection: validRecords.map(r => r.inspection).filter(Boolean).join("\n"),
-        records: validRecords
-      };
-    }
-
-    if (problem || inspection || serial) {
-      return { serial, problem, inspection, records: [{ serial, problem, inspection }] };
+      allRows.push({ model, serial, problem, inspection, sr: rowSr });
     }
   }
 
-  return null;
+  return allRows;
 }
 
-function extractRepairPairs(normalized) {
-  // 「客戶維修單號」後面的內容有時會因 PDF 排版換行，
-  // 例如：TC200-
-  // RR2609210138
-  // 因此不能只抓單一行；先抓到備註區／下一個表格前，再跨換行尋找所有 型號-RR。
-  const blockMatch = String(normalized || "").match(
-    /客戶維修單號\s*[:：]?\s*([\s\S]*?)(?=\n\s*\d+、|\n\s*No\.\s*料\s*號|\n\s*No\.\s*機|$)/i
-  );
-  const repairBlock = blockMatch?.[1] || "";
-  if (!repairBlock) return [];
-
-  const repairPairs = [];
-  const pairRe = /([A-Za-z0-9][A-Za-z0-9()\s_.]*?)\s*[-–—]\s*(RR[A-Z0-9-]+)/gi;
-  let pairMatch;
-  while ((pairMatch = pairRe.exec(repairBlock)) !== null) {
-    const model = cleanValue(pairMatch[1]).replace(/[\s]+$/g, "");
-    if (!model) continue;
-    const caseNumber = pairMatch[2].toUpperCase();
-    if (!repairPairs.some(x => x.caseNumber === caseNumber)) {
-      repairPairs.push({ model: getSheetModel(model), caseNumber });
-    }
-  }
-  return repairPairs;
-}
-
-function extractRepairSerialsFromText(lines) {
-  const headerIndex = lines.findIndex(line => /機\s*器\s*品\s*號\s*\/\s*序\s*號/i.test(line));
-  if (headerIndex < 0) return [];
-  const repairIndex = lines.findIndex((line, i) => i > headerIndex && /客戶維修單號/i.test(line));
-  const end = repairIndex >= 0 ? repairIndex : lines.length;
-  const serials = [];
-
-  const serialRe = /\b(UTA[A-Z0-9]{6,}|UT\d{8,}|[A-Z]{1,3}\d{6,}(?:-[A-Z0-9]+)?|\d{7,})\b/i;
-  const machineRe = /\b[A-Z0-9][A-Z0-9._-]{7,}\b/i;
-
-  for (let i = headerIndex + 1; i < end; i++) {
-    let line = String(lines[i] || "").trim();
-    if (!line) continue;
-
-    // 支援「1」獨立一行、或「1 機器品號」同一行。
-    let machineLineIndex = -1;
-    if (/^\d+\s*$/.test(line)) {
-      machineLineIndex = i + 1;
-    } else if (/^\d+\s+/.test(line) && machineRe.test(line)) {
-      machineLineIndex = i;
-    }
-    if (machineLineIndex < 0 || machineLineIndex >= end) continue;
-
-    const machineLine = String(lines[machineLineIndex] || "");
-    const machineMatch = machineLine.match(machineRe);
-    if (!machineMatch) continue;
-
-    const machineCode = machineMatch[0];
-    // 序號通常在機器品號下一行；若 PDF 把它和機器品號放同一行，也一併檢查。
-    const candidates = [];
-    const sameLineRemainder = machineLine.slice((machineMatch.index || 0) + machineCode.length);
-    candidates.push(sameLineRemainder);
-    for (let j = machineLineIndex + 1; j <= Math.min(end - 1, machineLineIndex + 3); j++) {
-      candidates.push(String(lines[j] || ""));
-    }
-
-    let serial = "";
-    for (const candidateText of candidates) {
-      const m = candidateText.match(serialRe);
-      if (m && m[1].toLowerCase() !== machineCode.toLowerCase()) {
-        serial = m[1];
-        break;
-      }
-    }
-
-    if (serial && !serials.some(x => x.toLowerCase() === serial.toLowerCase())) {
-      serials.push(serial);
-    }
-  }
-
-  return serials;
-}
-
-function normalizeDeviceFieldLines(value) {
-  return String(value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-}
-
-function applyMultiDeviceAlignment(fields, normalized, lines, coordinateTable) {
-  const repairPairs = extractRepairPairs(normalized);
-  const textSerials = extractRepairSerialsFromText(lines);
-  const records = Array.isArray(coordinateTable?.records) ? coordinateTable.records : [];
-  const deviceCount = Math.max(repairPairs.length, records.length, textSerials.length);
-  if (deviceCount <= 1) return;
-
-  if (repairPairs.length) {
-    fields.caseNumber = repairPairs.map(x => x.caseNumber).join("\n");
-    fields.model = repairPairs.map(x => getSheetModel(x.model)).join("\n");
-  }
-
-  const srNumbers = normalizeDeviceFieldLines(fields.srNumber);
-  if (srNumbers.length === 1) {
-    const slashParts = srNumbers[0].split(/[\/、,]/).map(x => x.trim()).filter(Boolean);
-    if (slashParts.length > 1) fields.srNumber = slashParts.join("\n");
-  }
-
-  const recordSerials = records.map(r => cleanSingleLine(r.serial)).filter(Boolean);
-  if (recordSerials.length >= deviceCount) fields.serial = recordSerials.slice(0, deviceCount).join("\n");
-  else if (textSerials.length >= deviceCount) fields.serial = textSerials.slice(0, deviceCount).join("\n");
-  else if (recordSerials.length > 1) fields.serial = recordSerials.join("\n");
-
-  const recordProblems = records.map(r => cleanIssueText(r.problem, r.serial)).filter(Boolean);
-  const recordInspections = records.map(r => cleanIssueText(r.inspection, r.serial)).filter(Boolean);
-  if (recordProblems.length >= deviceCount) fields.problem = recordProblems.slice(0, deviceCount).join("\n");
-  if (recordInspections.length >= deviceCount) fields.inspection = recordInspections.slice(0, deviceCount).join("\n");
-}
-
-function duplicatePartsForDeviceCount(fields) {
-  const deviceCount = Math.max(
-    normalizeDeviceFieldLines(fields.caseNumber).length,
-    normalizeDeviceFieldLines(fields.model).length,
-    normalizeDeviceFieldLines(fields.serial).length,
-    normalizeDeviceFieldLines(fields.problem).length,
-    normalizeDeviceFieldLines(fields.inspection).length
-  );
-  if (deviceCount <= 1) return;
-
-  const parts = normalizeDeviceFieldLines(fields.partNumbers);
-  const names = normalizeDeviceFieldLines(fields.products);
-  const quantities = normalizeDeviceFieldLines(fields.quantities);
-  const prices = normalizeDeviceFieldLines(fields.unitPrices);
-  const qty = quantities.length === 1 ? Number(quantities[0].replace(/,/g, "")) : NaN;
-
-  // 安全條件：單一零件且 PDF 數量剛好等於設備台數，才自動拆成每台 1 個。
-  if (parts.length === 1 && names.length === 1 && quantities.length === 1 && prices.length === 1 && qty === deviceCount) {
-    fields.partNumbers = Array(deviceCount).fill(parts[0]).join("\n");
-    fields.products = Array(deviceCount).fill(names[0]).join("\n");
-    fields.quantities = Array(deviceCount).fill("1").join("\n");
-    fields.unitPrices = Array(deviceCount).fill(prices[0]).join("\n");
-  }
+function extractRepairNumbers(text) {
+  const m = text.match(/客戶維修單號\s*[:：]?[\s\S]*?(?=\n\s*(?:1、|1\.|附\s*註|附註)|$)/i);
+  if (!m) return [];
+  const compact = m[0].replace(/\s+/g, "");
+  return [...compact.matchAll(/RR\d{6,}/gi)].map(x => x[0].toUpperCase());
 }
 
 function parseQuotation(text, layoutPages = null) {
@@ -822,34 +446,36 @@ function parseQuotation(text, layoutPages = null) {
   const fields = emptyFields();
   const lines = normalized.split("\n").map(x => x.trim()).filter(Boolean);
 
+  // 先從「客戶維修單號」完整區塊擷取所有 RR 編號，避免 PDF 換行把 RR 拆斷。
+  const repairNumbers = extractRepairNumbers(normalized);
+  const layoutRepairRows = extractRepairTableByColumns(layoutPages);
+
   // 1. 門市名稱
-  // 先保留「原始聯絡人」，再套用特殊倉別規則。
-  // 不能先 sanitizeContact，否則像「陳俐瑾」這類純 2~4 字中文姓名
-  // 會被一般門市名稱防呆規則過濾掉，導致特殊倉別無法命中。
-  const rawContact = cleanSingleLine(firstMatch(normalized, [
+  fields.contact = firstMatch(normalized, [
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
-  ]));
-
-  const mappedWarehouse = mapContactToWarehouse(rawContact);
-  fields.contact = mappedWarehouse !== rawContact
-    ? mappedWarehouse
-    : sanitizeContact(rawContact);
+  ]);
 
   // 2. SR 單號
-  // SR 單號可能同時包含多台設備，例如「3965352/3965354」。
-  const srMatch = normalized.match(/SR\s*單號\s*[:：]?\s*([0-9]+(?:\s*[\/、,]\s*[0-9]+)*)/i);
-  if (srMatch) {
-    fields.srNumber = srMatch[1].split(/[\/、,]/).map(x => x.trim()).filter(Boolean).join("\n");
-  } else {
-    fields.srNumber = firstMatch(normalized, [/SR單號\s*[:：]?\s*([A-Z0-9-]+)/i]);
+  fields.srNumber = firstMatch(normalized, [
+    /SR\s*單號\s*[:：]?\s*([0-9/、,，\s]+)/i,
+    /SR單號\s*[:：]?\s*([A-Z0-9\-_/、,，\s]+)/i
+  ]);
+  if (layoutRepairRows.length > 1) {
+    const rowSrs = layoutRepairRows.map(r => r.sr).filter(Boolean);
+    if (rowSrs.length) fields.srNumber = rowSrs.join("\n");
   }
 
   // 3. 案件編號 + 原始報修設備
-  const repairPairs = extractRepairPairs(normalized);
-  if (repairPairs.length) {
-    fields.caseNumber = repairPairs.map(x => x.caseNumber).join("\n");
-    fields.model = repairPairs.map(x => x.model).join("\n");
+  const repairMatch = normalized.match(
+    /客戶維修單號\s*[:：]?\s*(.*?)\s*-\s*(RR[A-Z0-9-]+)/i
+  );
+  if (repairMatch) {
+    const repairPrefix = cleanValue(repairMatch[1]);
+    fields.caseNumber = repairNumbers.join("\n") || repairMatch[2];
+    fields.model = repairPrefix;
+  } else if (repairNumbers.length) {
+    fields.caseNumber = repairNumbers.join("\n");
   }
 
   if (!fields.caseNumber) {
@@ -858,7 +484,7 @@ function parseQuotation(text, layoutPages = null) {
   }
 
   if (!fields.model) {
-    const modelMatch = normalized.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-700|Sewoo|SBarco(?:\(含裁刀\))?|ZD230|DA210|TSC\s+ALPHA-40L|TC200)\b/i);
+    const modelMatch = normalized.match(/\b(PA\d+(?:槍把)?|MS\d+|RP-700|Sewoo|SBarco(?:\(含裁刀\))?|ZD230|DA210|TSC\s+ALPHA-40L)\b/i);
     if (modelMatch) fields.model = cleanValue(modelMatch[1]);
   }
 
@@ -990,52 +616,15 @@ function parseQuotation(text, layoutPages = null) {
     }
   }
 
-  // 4.5 表格欄位優先使用 PDF 的實際 x/y 座標。
-  // 這比單純依文字先後順序穩定，尤其能處理「故障現象」與「檢測說明」
-  // 同一行、但位於不同欄位的情況。
-  const coordinateTable = extractRepairTableByColumns(layoutPages);
-  if (coordinateTable) {
-    if (coordinateTable.serial) fields.serial = coordinateTable.serial;
-    if (coordinateTable.problem) fields.problem = coordinateTable.problem;
-    if (coordinateTable.inspection) fields.inspection = coordinateTable.inspection;
-
-
-  }
-
-  // 多台設備：依設備一對一對齊案件編號、SR、序號、故障與檢測結果。
-  applyMultiDeviceAlignment(fields, normalized, lines, coordinateTable);
-
-  // 故障現象／檢測說明：每一台設備可以用換行分隔，但同一台設備內部的
-  // PDF 換行必須先合併，避免 Google Sheet 產生假的第二列／第三列。
-  const normalizeDeviceText = (value) => normalizeDeviceFieldLines(value)
-    .map(line => cleanIssueText(line))
-    .filter(Boolean)
-    .join("\n");
-  fields.problem = normalizeDeviceText(fields.problem);
-  fields.inspection = normalizeDeviceText(fields.inspection);
-
   // 通用序號備援：不限 UTA，支援 UT、純數字等。
   if (!fields.serial) {
-    // 通用備援仍優先使用既有 UTA / UT / 純數字格式。
-    // C6261408 這類序號若沒有成功走座標判讀，則只從「機器品號/序號」
-    // 表頭後的資料列尋找，避免直接從整份 PDF 把機器品號誤當成設備序號。
-    const serialMatch = normalized.match(
-      /機\s*器\s*品\s*號\s*\/\s*序\s*號[\s\S]{0,180}?\b[A-Z0-9][A-Z0-9._-]{7,}\b\s*\n\s*([A-Z]\d{6,})\b/i
-    );
-    if (serialMatch) {
-      fields.serial = serialMatch[1];
-    } else {
-      const legacySerialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
-      if (legacySerialMatch) fields.serial = legacySerialMatch[1];
-    }
+    const serialMatch = normalized.match(/\b(UTA[A-Z0-9]{6,}|UT\d{8,}|\d{12,})\b/i);
+    if (serialMatch) fields.serial = serialMatch[1];
   }
-
-  const coordinateProblem = fields.problem;
-  const coordinateInspection = fields.inspection;
 
   // 5. 故障原因 + 廠商檢測回覆
   // 先處理最可靠的「1.」分隔；沒有編號時，再依常見檢測語句切分。
-  if (issueBlock && (!fields.problem || !fields.inspection)) {
+  if (issueBlock) {
     const numbered = issueBlock.match(/^(.*?)(?=\s*1\.\s*)((?:1\.\s*).*)$/);
 
     if (numbered) {
@@ -1046,7 +635,7 @@ function parseQuotation(text, layoutPages = null) {
       // 9/29 列印模糊不清 印表機印字頭斷針
       // 10/1 觸控不良 螢幕觸控不良，電池膨脹，報價更換
       const splitAt = issueBlock.search(
-        /\s+(?=(?:主電池|電池|螢幕|印表機|裁刀|印字頭|卡勾|列印|觸控|充電).*(?:不良|故障|斷針|磨損|膨脹|無法|正常|報價|清潔|更換|異常))/i
+        /\s+(?=(?:螢幕|印表機|裁刀|印字頭|電池).*(?:不良|故障|斷針|磨損|膨脹|無法|正常|報價|清潔|更換))/i
       );
 
       if (splitAt > 0) {
@@ -1079,10 +668,6 @@ function parseQuotation(text, layoutPages = null) {
     const m = normalized.match(/(\b1\.\s*.*?)(?=\s*客戶維修單號)/i);
     if (m) fields.inspection = cleanIssueText(m[1], fields.serial);
   }
-
-  // 若已由座標表格判讀成功，以座標結果為最高優先，避免後面的文字備援覆蓋。
-  if (coordinateProblem) fields.problem = coordinateProblem;
-  if (coordinateInspection) fields.inspection = coordinateInspection;
 
   // 6. 收費方式：PDF 沒有欄位時固定預設「耗材收費」。
   fields.feeType = firstMatch(normalized, [
@@ -1117,14 +702,13 @@ function parseQuotation(text, layoutPages = null) {
         }
         buffer = line;
       } else if (buffer) {
-        // PDF 常把料號最後一段拆到下一行，例如：
-        // RBATC10283R7ZR0
-        // .SRP
-        // UC2210, 750F UltraCap Capacitor ...
-        // 或把 84-T400-017-003.SR / P 拆成兩行。
-        // 這些都是料號的續行，必須先接回料號，再交給 parseProductBuffer。
-        if (/^\.[A-Z0-9]{1,8}$/.test(line) && /\b[A-Z0-9][A-Z0-9._-]{5,}\s*$/.test(buffer)) {
-          buffer = buffer.trimEnd() + line;
+        // PDF 常把料號最後一個字母拆到下一行，例如：
+        // 84-T400-017-003.SR
+        // P
+        // 印字頭...
+        // 這裡要把 P 接回料號，而不是接到金額後面。
+        if (/^\.[A-Z]{2,4}$/i.test(line) && /[A-Z0-9][A-Z0-9._-]*$/i.test(buffer)) {
+          buffer += line;
         } else if (/^[A-Z0-9]{1,3}$/.test(line) && /\.[A-Z]{2}\s+[\u3400-\u4dbf\u4e00-\u9fff]/i.test(buffer)) {
           buffer = buffer.replace(/(\.[A-Z]{2})(?=\s+[\u3400-\u4dbf\u4e00-\u9fff])/i, `$1${line}`);
         } else {
@@ -1139,54 +723,69 @@ function parseQuotation(text, layoutPages = null) {
     }
   }
 
+  // 座標判讀優先：同一份報價單有多台設備時，逐列保留 SR／序號／故障／檢測，
+  // 同時把 PDF 因欄寬造成的換行合併，不再讓換行被誤認成另一筆資料。
+  if (layoutRepairRows.length) {
+    const cases = repairNumbers.slice(0, layoutRepairRows.length);
+    fields.model = layoutRepairRows.map(r => getSheetModel(r.model)).join("\n");
+    fields.serial = layoutRepairRows.map(r => r.serial).join("\n");
+    fields.problem = layoutRepairRows.map(r => cleanIssueText(r.problem, r.serial)).join("\n");
+    fields.inspection = layoutRepairRows.map(r => cleanIssueText(r.inspection, r.serial)).join("\n");
+    if (cases.length) fields.caseNumber = cases.join("\n");
+    const rowSrs = layoutRepairRows.map(r => r.sr).filter(Boolean);
+    if (rowSrs.length) fields.srNumber = rowSrs.join("\n");
+  }
+
   fields.partNumbers = partNumbers.join("\n");
   fields.products = productNames.join("\n");
   fields.quantities = quantities.join("\n");
   fields.unitPrices = unitPrices.join("\n");
 
-  duplicatePartsForDeviceCount(fields);
-
   return fields;
 }
 
 function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitPrices) {
-  const text = cleanValue(buffer)
-    .replace(/\s+/g, " ")
-    .replace(/(\.[A-Z]{2})\s+([A-Z])\b/gi, "$1$2");
+  const text = cleanValue(buffer).replace(/\s+/g, " ").replace(/(\.[A-Z]{2})\s+([A-Z])\b/gi, "$1$2");
 
   // 從右側固定抓：單位、數量、單價、金額；前面才是料號與品名。
   const m = text.match(
-    /^\s*\d+\s+(.+)\s+(EA|PCS|SET|個|件)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s*$/i
+    /^\s*\d+\s+(.+)\s+(EA|PCS|SET|個|件)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)(?:\s+(.+))?\s*$/i
   );
 
   if (!m) return;
 
-  let beforeUnit = cleanValue(m[1]);
+  let beforeUnit = cleanValue(m[1] + (m[6] ? " " + m[6] : ""));
   let name = "";
-  let partNumber = "";
 
-  // 第一優先：PDF 表格的料號通常是「第一個 token」，品名從第二個 token 開始。
-  // 這一點很重要，例如「609737G. COLOR加工_MS852_136C Trigger V4」
-  // 不能從第一個中文字「工」切割，否則 COLOR 會被錯誤併入料號。
-  const tokens = beforeUnit.split(/\s+/).filter(Boolean);
-  if (tokens.length >= 2 && /^[A-Z0-9][A-Z0-9._-]{5,}$/i.test(tokens[0])) {
-    beforeUnit = tokens[0];
-    name = tokens.slice(1).join(" ");
+  // 優先處理「標準料號 + 空白 + 品名」；這同時涵蓋英文品名與中英混合品名。
+  // 例如：1550-905920G.SRP ESD USB/AM Cable...維護 產品線
+  const leadingPart = beforeUnit.match(/^([A-Z0-9][A-Z0-9._-]{5,})\s+(.+)$/i);
+  if (leadingPart) {
+    beforeUnit = leadingPart[1].trim();
+    name = leadingPart[2].trim();
   } else {
-    // 備援：料號與品名沒有明確空白時，才使用第一個中文字切割。
+    // 料號與品名通常以第一個中文字為分界。
+    // 這可以正確處理：84-T400-017-003.SRP 印字頭、BENCH SERVICE. 庫內維修
     const chineseIndex = beforeUnit.search(/[\u3400-\u4dbf\u4e00-\u9fff]/);
     if (chineseIndex >= 0) {
-      const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
-      const possibleName = beforeUnit.slice(chineseIndex).trim();
+    const possiblePart = beforeUnit.slice(0, chineseIndex).trim();
+    const possibleName = beforeUnit.slice(chineseIndex).trim();
       if (possiblePart) {
         beforeUnit = possiblePart;
         name = possibleName;
       }
+    } else {
+      // 英文品名沒有中文字時，PDF 仍通常以「料號 + 空白 + 品名」排列。
+      const englishPart = beforeUnit.match(/^([A-Z0-9][A-Z0-9._-]{5,})(?:\s+)(.+)$/i);
+      if (englishPart) {
+        beforeUnit = englishPart[1].trim();
+        name = englishPart[2].trim();
+      }
     }
   }
 
-  // 若 PDF 把 .SRP 拆成「.SR P」，合併回正確料號。
-  partNumber = beforeUnit
+  // PDF 可能把 .SRP 拆成「.SR P」，合併回正確料號。
+  let partNumber = beforeUnit
     .replace(/(\.[A-Z]{2})\s+([A-Z])$/i, "$1$2")
     .replace(/\.+$/, "")
     .trim();
@@ -1202,48 +801,53 @@ function parseProductBuffer(buffer, partNumbers, productNames, quantities, unitP
   unitPrices.push(Number(m[4].replace(/,/g, "")).toLocaleString("en-US"));
 }
 
-function normalizePastedSingleLine(value) {
-  return String(value || "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\r?\n/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .trim();
+function updateConfidenceBadge() {
+  const badge = $("confidenceBadge");
+  if (!badge) return;
+  const filled = FIELD_DEFS.filter(d => String($(`field-${d.key}`)?.value || "").trim()).length;
+  const prefix = state.ocrUsed ? "OCR" : "文字擷取";
+  badge.textContent = `${prefix}・${filled}/${FIELD_DEFS.length} 欄位`;
+  badge.classList.toggle("incomplete", filled < FIELD_DEFS.length);
 }
 
-function formatPastedPrices(value) {
-  return String(value || "")
-    .replace(/\r/g, "")
-    .split("\n")
-    .map(line => {
-      const raw = line.trim();
-      if (!raw) return "";
-      const compact = raw.replace(/,/g, "");
-      if (/^\d+(?:\.\d+)?$/.test(compact)) {
-        const number = Number(compact);
-        return Number.isFinite(number) ? number.toLocaleString("en-US") : raw;
-      }
-      return raw;
-    })
-    .join("\n");
-}
+function updateFieldVisual(row, el, def) {
+  row.classList.remove("field-error", "field-manual");
+  const oldTag = row.querySelector(".field-note");
+  if (oldTag) oldTag.remove();
 
-const MULTI_ROW_FIELDS = new Set([
-  "partNumbers",
-  "products",
-  "quantities",
-  "unitPrices"
-]);
+  const value = String(el.value || "").trim();
+  const initial = String(state.initialValues?.[def.key] || "").trim();
+  const note = document.createElement("span");
+  note.className = "field-note";
+
+  if (!value) {
+    row.classList.add("field-error");
+    note.textContent = "資料異常";
+    row.querySelector(".field-label")?.appendChild(note);
+  } else if (value !== initial) {
+    row.classList.add("field-manual");
+    note.textContent = "已手動修改";
+    row.querySelector(".field-label")?.appendChild(note);
+  }
+
+  if (def.key === "quantities" && value) {
+    const nums = value.split(/\r?\n/).map(x => Number(x.replace(/,/g, "").trim())).filter(Number.isFinite);
+    if (nums.some(n => n > 1)) {
+      const qnote = document.createElement("span");
+      qnote.className = "quantity-note";
+      qnote.textContent = "數量異常";
+      row.querySelector(".field-label")?.appendChild(qnote);
+    }
+  }
+}
 
 function updateConfidenceBadge() {
-  const confidenceBadge = $("confidenceBadge");
-  if (!confidenceBadge) return;
-
-  const filled = FIELD_DEFS.filter(d => String(state.fields?.[d.key] || "").trim()).length;
+  const badge = $("confidenceBadge");
+  if (!badge) return;
+  const filled = FIELD_DEFS.filter(d => String($(`field-${d.key}`)?.value || "").trim()).length;
   const prefix = state.ocrUsed ? "OCR" : "文字擷取";
-
-  confidenceBadge.textContent = `${prefix}・${filled}/${FIELD_DEFS.length} 欄位`;
-  confidenceBadge.classList.toggle("confidence-ok", filled === FIELD_DEFS.length);
-  confidenceBadge.classList.toggle("confidence-warning", filled < FIELD_DEFS.length);
+  badge.textContent = `${prefix}・${filled}/${FIELD_DEFS.length} 欄位`;
+  badge.classList.toggle("incomplete", filled < FIELD_DEFS.length);
 }
 
 function renderFields() {
@@ -1277,112 +881,22 @@ if (def.type === "textarea") {
 
     el.addEventListener("input", () => {
       state.fields[def.key] = el.value;
-
-      // 人工修改後立即標示；按下「更新資料」後也維持標示。
-      const before = String(state.originalFields[def.key] || "").trim();
-      const after = String(el.value || "").trim();
-      if (before !== after) {
-        state.modifiedKeys.add(def.key);
-      } else {
-        // 若使用者把內容改回原始判讀結果，則取消該欄位標示。
-        state.modifiedKeys.delete(def.key);
-      }
-      const hasValue = String(el.value || "").trim().length > 0;
-      const manuallyModified = state.modifiedKeys.has(def.key);
-      row.classList.toggle("field-missing", !hasValue);
-      row.classList.toggle("field-updated", manuallyModified);
-      const missingHint = row.querySelector(".field-missing-text");
-      if (missingHint) missingHint.hidden = hasValue;
-      const manualHint = row.querySelector(".manual-modified-text");
-      if (manualHint) manualHint.hidden = !manuallyModified;
-      state.updated = state.modifiedKeys.size > 0;
-      updateConfidenceBadge();
+      updateFieldVisual(row, el, def);
       updateQuotationFileName();
       updateGoogleSheetPreview();
+      updateConfidenceBadge();
     });
 
-    const manualHint = document.createElement("small");
-    manualHint.className = "manual-modified-text";
-    manualHint.textContent = "已手動修改";
-    manualHint.hidden = !state.modifiedKeys.has(def.key);
-
-    const hasValue = String(el.value || "").trim().length > 0;
-    row.classList.toggle("field-missing", !hasValue);
-    const missingHint = document.createElement("small");
-    missingHint.className = "field-missing-text";
-    missingHint.textContent = "資料異常";
-    missingHint.hidden = hasValue;
-
-    // 手動貼上時：一般判讀欄位自動把換行整併成同一行，避免從 PDF/Excel 貼上後
-    // 畫面看似同一段內容、實際卻含有換行。零件相關欄位則保留換行，
-    // 因為每一行代表一個 Google Sheet 零件資料列。
-    el.addEventListener("paste", (event) => {
-      event.preventDefault();
-      const pasted = event.clipboardData?.getData("text/plain") ?? "";
-      let value = pasted;
-
-      if (def.key === "unitPrices") {
-        value = formatPastedPrices(pasted);
-      } else if (!MULTI_ROW_FIELDS.has(def.key)) {
-        value = normalizePastedSingleLine(pasted);
-      }
-
-      const start = typeof el.selectionStart === "number" ? el.selectionStart : el.value.length;
-      const end = typeof el.selectionEnd === "number" ? el.selectionEnd : el.value.length;
-      el.value = el.value.slice(0, start) + value + el.value.slice(end);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-
-      const cursor = start + value.length;
-      try {
-        el.setSelectionRange(cursor, cursor);
-      } catch (_) {}
-    });
-
-    // 離開「未稅報價」欄位時，再統一補上千分位；不影響多筆零件的換行。
-    if (def.key === "unitPrices") {
-      el.addEventListener("blur", () => {
-        const formatted = formatPastedPrices(el.value);
-        if (formatted !== el.value) {
-          el.value = formatted;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-        }
-      });
-    }
+    updateFieldVisual(row, el, def);
 
     row.appendChild(label);
     row.appendChild(el);
-    row.appendChild(manualHint);
-    row.appendChild(missingHint);
-
-    // 多台設備但產品數量與設備台數相同時，系統會自動按設備一對一拆成數量 1。
-    // 若數量情況不符合這個安全規則，不擅自拆單，只在欄位上提示「數量異常」。
-    if (def.key === "quantities") {
-      const countLines = (value) => String(value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean).length;
-      const deviceCount = Math.max(
-        countLines(state.fields.caseNumber),
-        countLines(state.fields.model),
-        countLines(state.fields.serial),
-        countLines(state.fields.problem),
-        countLines(state.fields.inspection)
-      );
-      const qtyValues = String(state.fields.quantities || "").split(/\r?\n/).map(x => Number(x.replace(/,/g, "").trim())).filter(Number.isFinite);
-      const safeSplit = deviceCount > 1 && qtyValues.length > 0 && qtyValues.length === countLines(state.fields.partNumbers) && qtyValues.every(q => q === deviceCount);
-      const suspicious = deviceCount > 1 && !safeSplit && (qtyValues.length === 0 || qtyValues.some(q => q !== 1));
-      if (suspicious && hasValue) {
-        const hint = document.createElement("small");
-        hint.className = "quantity-warning-text";
-        hint.textContent = "數量異常";
-        row.appendChild(hint);
-      }
-    }
-
     container.appendChild(row);
   }
 
   updateQuotationFileName();
   updateGoogleSheetPreview();
 }
-
 
 function getEditedFields() {
   const result = {};
@@ -1522,22 +1036,23 @@ async function extractPdfText(pdf) {
 
 async function extractPdfLayout(pdf) {
   const pages = [];
-
   for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
     const page = await pdf.getPage(pageNo);
     const content = await page.getTextContent();
-
-    pages.push(content.items
-      .filter(item => item && item.str && item.str.trim())
-      .map(item => ({
-        str: item.str,
-        x: Number(item.transform?.[4] || 0),
-        y: Number(item.transform?.[5] || 0),
-        width: Number(item.width || 0),
-        height: Number(item.height || Math.abs(item.transform?.[3] || 0))
-      })));
+    const items = content.items.map(item => ({
+      str: item.str || "",
+      x: Number(item.transform?.[4] || 0),
+      y: Number(item.transform?.[5] || 0),
+      width: Number(item.width || 0),
+      height: Number(item.height || 0)
+    })).filter(item => item.str.trim());
+    // PDF 座標 Y 從下往上；這裡轉成「由上到下」排序使用。
+    if (items.length) {
+      const maxY = Math.max(...items.map(i => i.y));
+      for (const item of items) item.y = maxY - item.y;
+    }
+    pages.push(items);
   }
-
   return pages;
 }
 
@@ -1547,7 +1062,7 @@ async function renderPage(pageNo) {
   state.currentPage = Math.max(1, Math.min(pageNo, state.pdfDoc.numPages));
 
   const page = await state.pdfDoc.getPage(state.currentPage);
-  const viewport = page.getViewport({ scale: state.pdfZoom || 1.0 });
+  const viewport = page.getViewport({ scale: 1.45 });
   const canvas = $("pdfCanvas");
   const context = canvas.getContext("2d");
 
@@ -1620,10 +1135,7 @@ async function processFile(file) {
   state.fields = emptyFields();
   state.fields.fillDate = formatUploadDate(new Date());
   state.rawText = "";
-  state.layout = null;
   state.ocrUsed = false;
-  state.pdfZoom = 1.0;
-  $("pdfZoomLabel").textContent = "100%";
 
   $("fileName").textContent = file.name;
   $("fileMeta").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
@@ -1644,7 +1156,6 @@ async function processFile(file) {
     await renderPage(1);
 
     let text = await extractPdfText(state.pdfDoc);
-    state.layout = await extractPdfLayout(state.pdfDoc);
 
     /*
      * 如果擷取到的文字太少，視為掃描 PDF，改走 OCR。
@@ -1654,15 +1165,18 @@ async function processFile(file) {
       state.ocrUsed = true;
       setStatus("文字不足，啟動 OCR…");
       text = await ocrPdf(state.pdfDoc);
-      state.layout = null;
     }
 
     state.rawText = text;
-    state.fields = parseQuotation(text, state.layout);
+    let layoutPages = [];
+    try {
+      layoutPages = await extractPdfLayout(state.pdfDoc);
+    } catch (layoutError) {
+      console.warn("座標判讀失敗，改用文字判讀：", layoutError);
+    }
+    state.fields = parseQuotation(text, layoutPages);
     state.fields.fillDate = formatUploadDate(new Date());
-    state.originalFields = JSON.parse(JSON.stringify(state.fields));
-    state.modifiedKeys = new Set();
-    state.updated = false;
+    state.initialValues = { ...state.fields };
 
     renderFields();
     updateQuotationFileName();
@@ -1677,8 +1191,6 @@ async function processFile(file) {
     console.error(error);
     setStatus("判讀失敗");
     $("confidenceBadge").textContent = "判讀失敗";
-    $("confidenceBadge").classList.remove("confidence-ok");
-    $("confidenceBadge").classList.add("confidence-warning");
     showToast(error.message || "PDF 判讀失敗");
   }
 }
@@ -1710,19 +1222,13 @@ function renderFileList() {
     const name = document.createElement("div");
     name.className = "file-item-name";
     name.textContent = `${index + 1}. ${file.name}`;
-    name.title = "點擊切換並顯示此文件";
-    name.tabIndex = 0;
-    const selectFile = () => {
+
+    name.title = "點擊切換此文件";
+    name.style.cursor = "pointer";
+    name.addEventListener("click", () => {
       state.currentIndex = index;
       renderFileList();
       processFile(file);
-    };
-    name.addEventListener("click", selectFile);
-    name.addEventListener("keydown", event => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectFile();
-      }
     });
 
     item.appendChild(name);
@@ -1736,13 +1242,9 @@ function clearAll() {
   state.pdfDoc = null;
   state.currentFile = null;
   state.fields = emptyFields();
-  state.originalFields = emptyFields();
-  state.modifiedKeys = new Set();
-  state.updated = false;
   state.rawText = "";
-  state.layout = null;
   state.ocrUsed = false;
-  state.pdfZoom = 1.0;
+  state.initialValues = emptyFields();
 
   $("pdfInput").value = "";
   $("toolbar").classList.add("hidden");
@@ -1753,11 +1255,9 @@ function clearAll() {
   $("googleSheetPreview").textContent = "—";
   $("rawText").textContent = "";
   $("confidenceBadge").textContent = "待判讀";
-  $("confidenceBadge").classList.remove("confidence-ok", "confidence-warning");
   $("fileList").innerHTML = "";
   $("viewerEmpty").classList.remove("hidden");
   $("pageLabel").textContent = "第 1 / 1 頁";
-  $("pdfZoomLabel").textContent = "100%";
   $("pdfCanvas").getContext("2d").clearRect(
     0, 0,
     $("pdfCanvas").width,
@@ -1799,83 +1299,6 @@ $("prevPageBtn").addEventListener("click", () => {
 $("nextPageBtn").addEventListener("click", () => {
   renderPage(state.currentPage + 1);
 });
-
-$("pdfZoomOutBtn").addEventListener("click", async () => {
-  state.pdfZoom = Math.max(0.6, +(state.pdfZoom - 0.15).toFixed(2));
-  $("pdfZoomLabel").textContent = `${Math.round(state.pdfZoom * 100)}%`;
-  await renderPage(state.currentPage);
-});
-
-$("pdfZoomInBtn").addEventListener("click", async () => {
-  state.pdfZoom = Math.min(3.5, +(state.pdfZoom + 0.15).toFixed(2));
-  $("pdfZoomLabel").textContent = `${Math.round(state.pdfZoom * 100)}%`;
-  await renderPage(state.currentPage);
-});
-
-
-// PDF：在固定大小的預覽框內放大、縮小與拖曳移動。
-// Canvas 會以實際 PDF 尺寸渲染，因此放大後不會再被 max-width 壓回原尺寸。
-(() => {
-  const viewer = $("pdfViewer");
-  const canvas = $("pdfCanvas");
-  let dragging = false;
-  let startX = 0, startY = 0, startLeft = 0, startTop = 0;
-
-  viewer.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || e.target !== canvas) return;
-    dragging = true;
-    viewer.classList.add("is-panning");
-    startX = e.clientX;
-    startY = e.clientY;
-    startLeft = viewer.scrollLeft;
-    startTop = viewer.scrollTop;
-    viewer.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-
-  viewer.addEventListener("pointermove", e => {
-    if (!dragging) return;
-    viewer.scrollLeft = startLeft - (e.clientX - startX);
-    viewer.scrollTop = startTop - (e.clientY - startY);
-    e.preventDefault();
-  });
-
-  const stop = e => {
-    if (!dragging) return;
-    dragging = false;
-    viewer.classList.remove("is-panning");
-    try { viewer.releasePointerCapture(e.pointerId); } catch (_) {}
-  };
-
-  viewer.addEventListener("pointerup", stop);
-  viewer.addEventListener("pointercancel", stop);
-  viewer.addEventListener("pointerleave", e => {
-    if (dragging && !viewer.hasPointerCapture(e.pointerId)) stop(e);
-  });
-
-  // 滑鼠滾輪也可縮放；以滑鼠所在位置為縮放中心。
-  viewer.addEventListener("wheel", async e => {
-    if (!state.pdfDoc || e.ctrlKey || e.metaKey) return;
-    e.preventDefault();
-
-    const oldZoom = state.pdfZoom || 1.0;
-    const direction = e.deltaY < 0 ? 1 : -1;
-    const newZoom = Math.max(0.6, Math.min(3.5, +(oldZoom + direction * 0.12).toFixed(2)));
-    if (newZoom === oldZoom) return;
-
-    const rect = viewer.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left + viewer.scrollLeft;
-    const mouseY = e.clientY - rect.top + viewer.scrollTop;
-    const ratio = newZoom / oldZoom;
-
-    state.pdfZoom = newZoom;
-    $("pdfZoomLabel").textContent = `${Math.round(newZoom * 100)}%`;
-    await renderPage(state.currentPage);
-
-    viewer.scrollLeft = mouseX * ratio - (e.clientX - rect.left);
-    viewer.scrollTop = mouseY * ratio - (e.clientY - rect.top);
-  }, { passive: false });
-})();
 
 $("rawToggleBtn").addEventListener("click", () => {
   $("rawText").classList.toggle("hidden");
