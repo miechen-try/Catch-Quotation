@@ -978,7 +978,8 @@ async function copyResult() {
 
 
 async function copyQuotationFileName() {
-  const fileName = buildQuotationFileName();
+  // 複製給雲端檔案命名時不帶 .pdf，避免上傳時重複變成 .pdf.pdf。
+  const fileName = buildQuotationFileName().replace(/\.pdf$/i, "");
 
   if (!fileName) {
     showToast("目前沒有可複製的報價單檔名");
