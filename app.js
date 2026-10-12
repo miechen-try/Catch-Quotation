@@ -19,8 +19,8 @@
  */
 
 const FIELD_DEFS = [
-  { key: "caseNumber", label: "案件編號", type: "input" },
-  { key: "srNumber", label: "SR單號", type: "input" },
+  { key: "caseNumber", label: "案件編號", type: "textarea" },
+  { key: "srNumber", label: "SR單號", type: "textarea" },
   { key: "fillDate", label: "填寫日期", type: "input" },
   { key: "contact", label: "門市名稱", type: "input" },
   { key: "model", label: "報修設備", type: "textarea" },
@@ -142,18 +142,11 @@ function cleanIssueText(value, serial = "") {
     result = result.replace(new RegExp(escapeRegExp(serial), "gi"), "");
   }
 
-  // 某些 PDF 的文字層會把下方零件表格標題／欄位串接到檢測欄，
-  // 「報價單位、數量、單價、金額」之後均屬零件表格，不是檢測說明。
-  result = result.replace(/報價\s*單位[\s\S]*$/i, "");
-  result = result.replace(/(?:報價)?單位\s*數量\s*單價\s*金額[\s\S]*$/i, "");
-
   // 中文句子因 PDF 換行產生的空白要合併，例如「無 法」→「無法」。
   result = result.replace(/([\u3400-\u4dbf\u4e00-\u9fff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$1");
 
   result = result.replace(/(\d)\s+\./g, "$1.");
   result = result.replace(/\.\s+([A-Z]{2,4})(?=\s|$)/g, ".$1");
-  // 欄位邊界被 PDF 文字層串接時，避免「品名」標題殘留在故障原因尾端。
-  result = result.replace(/\s*品名\s*$/i, "");
   return result.replace(/[ \t]+/g, " ").trim();
 }
 function cleanProductName(value) {
@@ -462,12 +455,6 @@ function parseQuotation(text, layoutPages = null) {
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
   ]);
-  // 特定聯絡人備註不是門市名稱，統一轉成「門市」。使用 includes，
-  // 以兼容 PDF 文字擷取時前後空白或其他字元略有差異的情況。
-  const contactForMapping = String(fields.contact || "").replace(/\s+/g, "").trim();
-  if (contactForMapping.includes("陳俐瑾-下貨請電連")) {
-    fields.contact = "門市";
-  }
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
@@ -475,8 +462,21 @@ function parseQuotation(text, layoutPages = null) {
     /SR單號\s*[:：]?\s*([A-Z0-9\-_/、,，\s]+)/i
   ]);
   if (layoutRepairRows.length > 1) {
+    // 多設備報價單：以各設備檢測欄中的括號 SR 為優先來源，
+    // 避免頁首 SR 欄只列出前三筆，或座標切欄時漏掉末筆開頭數字。
     const rowSrs = layoutRepairRows.map(r => r.sr).filter(Boolean);
-    if (rowSrs.length) fields.srNumber = rowSrs.join("\n");
+    const parenthesizedSrs = [...normalized.matchAll(/\((\d{6,})\)/g)].map(m => m[1]);
+    const headerSrsMatch = normalized.match(/SR\s*單\s*號\s*[:：]?\s*([0-9/、,，\s]+)/i);
+    const headerSrs = headerSrsMatch
+      ? [...headerSrsMatch[1].matchAll(/\d{6,}/g)].map(m => m[0])
+      : [];
+    const candidates = parenthesizedSrs.length >= layoutRepairRows.length
+      ? parenthesizedSrs
+      : rowSrs.length >= layoutRepairRows.length
+        ? rowSrs
+        : [...headerSrs, ...rowSrs];
+    const orderedSrs = [...new Set(candidates)].slice(0, layoutRepairRows.length);
+    if (orderedSrs.length) fields.srNumber = orderedSrs.join("\n");
   }
 
   // 3. 案件編號 + 原始報修設備
