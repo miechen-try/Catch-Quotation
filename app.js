@@ -142,11 +142,18 @@ function cleanIssueText(value, serial = "") {
     result = result.replace(new RegExp(escapeRegExp(serial), "gi"), "");
   }
 
+  // 某些 PDF 的文字層會把下方零件表格標題／欄位串接到檢測欄，
+  // 「報價單位、數量、單價、金額」之後均屬零件表格，不是檢測說明。
+  result = result.replace(/報價\s*單位[\s\S]*$/i, "");
+  result = result.replace(/(?:報價)?單位\s*數量\s*單價\s*金額[\s\S]*$/i, "");
+
   // 中文句子因 PDF 換行產生的空白要合併，例如「無 法」→「無法」。
   result = result.replace(/([\u3400-\u4dbf\u4e00-\u9fff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff])/g, "$1");
 
   result = result.replace(/(\d)\s+\./g, "$1.");
   result = result.replace(/\.\s+([A-Z]{2,4})(?=\s|$)/g, ".$1");
+  // 欄位邊界被 PDF 文字層串接時，避免「品名」標題殘留在故障原因尾端。
+  result = result.replace(/\s*品名\s*$/i, "");
   return result.replace(/[ \t]+/g, " ").trim();
 }
 function cleanProductName(value) {
