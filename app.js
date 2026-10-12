@@ -455,6 +455,12 @@ function parseQuotation(text, layoutPages = null) {
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
   ]);
+  // 特定聯絡人備註不是門市名稱，統一轉成「門市」。使用 includes，
+  // 以兼容 PDF 文字擷取時前後空白或其他字元略有差異的情況。
+  const contactForMapping = String(fields.contact || "").replace(/\s+/g, "").trim();
+  if (contactForMapping.includes("陳俐瑾-下貨請電連")) {
+    fields.contact = "門市";
+  }
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
