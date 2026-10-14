@@ -168,7 +168,7 @@ function formatUploadDate(date = new Date()) {
 
 const MODEL_SHEET_MAP = {
   "MS838": "有線掃碼槍MS838",
-  "MS842": "無線掃瑪槍MS842P",
+  "MS842": "無線掃碼槍MS842P",
   "MS852": "無線掃碼槍MS852P",
   "RP-700": "熱感應機RP-700",
   "Sewoo": "熱感應機Sewoo",
@@ -205,6 +205,19 @@ function joinForSheet(value) {
     .map(x => x.trim())
     .filter(Boolean)
     .join("、");
+}
+
+function mapContactToWarehouse(value) {
+  const contact = String(value || "").trim();
+  if (!contact) return "";
+  const lower = contact.toLowerCase();
+  if (["emma lin", "benson kuo", "benson", "emily"].some(name => lower.includes(name))) {
+    return "SOC北倉";
+  }
+  // 保留既有特殊聯絡人對應規則。
+  if (["陳俐瑾", "林嘉祥", "elaine lei", "claire pang"].some(name => lower.includes(name.toLowerCase()))) return "IM北倉";
+  if (["tiana", "ann chen", "孫健豪", "侯淑婷"].some(name => lower.includes(name.toLowerCase()))) return "SOC南倉";
+  return contact;
 }
 
 function buildQuotationFileName() {
@@ -246,8 +259,8 @@ function buildGoogleSheetRows() {
 
   const parts = splitRows(f.partNumbers);
   const names = splitRows(f.products);
-  const quantities = splitRows(f.quantities);
-  const prices = splitRows(f.unitPrices);
+  let quantities = splitRows(f.quantities);
+  let prices = splitRows(f.unitPrices);
   const models = splitRows(f.model);
   const serials = splitRows(f.serial);
   const problems = splitRows(f.problem);
@@ -261,6 +274,13 @@ function buildGoogleSheetRows() {
     cases.length, srs.length, 1
   );
 
+  // 單一零件列、數量剛好等於設備列數時，視為每台設備各一件：
+  // 零件料號／品名／單價沿用同一項，數量拆成每列 1。
+  if (rowCount > 1 && parts.length === 1 && names.length === 1 && quantities.length === 1) {
+    const q = Number(String(quantities[0]).replace(/,/g, ""));
+    if (Number.isFinite(q) && q === rowCount) quantities = Array(rowCount).fill("1");
+  }
+
   const pick = (arr, i) => arr[i] || (arr.length === 1 ? arr[0] : "");
   const rows = [];
 
@@ -270,7 +290,7 @@ function buildGoogleSheetRows() {
       pick(srs, i),
       f.fillDate,
       "",
-      f.contact,
+      mapContactToWarehouse(f.contact),
       getSheetModel(pick(models, i)),
       pick(serials, i),
       pick(problems, i),
@@ -387,7 +407,9 @@ function extractRepairTableByColumns(layoutPages) {
       if (!text) continue;
 
       const machineTexts = ordered.filter(x => x.x < b1).map(x => x.str).join("").trim();
-      const looksLikeMachine = /(?:MS\d+|PA\d+|RP-?\d+|ZD\d+|DA\d+|TC\d+|TSC|SBarco|Sewoo|Cino\s*A678)/i.test(machineTexts);
+      const machineCellText = machineTexts.trim();
+      const looksLikeSerialOnly = /^(?:UT[A-Z0-9]{7,}|UTA[A-Z0-9]{6,}|TC\d{8,}|\d{12,})$/i.test(machineCellText);
+      const looksLikeMachine = !looksLikeSerialOnly && /(?:MS\d+|PA\d+|RP-?\d+|ZD\d+|DA\d+|TC\d+|TSC|SBarco|Sewoo|Cino\s*A678|^[A-Z0-9]+(?:-[A-Z0-9]+){2,})/i.test(machineCellText);
 
       if (looksLikeMachine) {
         if (current) rowGroups.push(current);
@@ -451,10 +473,10 @@ function parseQuotation(text, layoutPages = null) {
   const layoutRepairRows = extractRepairTableByColumns(layoutPages);
 
   // 1. 門市名稱
-  fields.contact = firstMatch(normalized, [
+  fields.contact = mapContactToWarehouse(firstMatch(normalized, [
     /聯絡人\s*[:：]?\s*(.*?)\s*報價日期\s*[:：]/i,
     /聯絡人\s*[:：]?\s*(.{1,80}?)(?=報價日期|統一編號|公司地址|承辦人員|公司電話|SR單號)/i
-  ]);
+  ]));
 
   // 2. SR 單號
   fields.srNumber = firstMatch(normalized, [
@@ -740,7 +762,14 @@ function parseQuotation(text, layoutPages = null) {
   // 同時把 PDF 因欄寬造成的換行合併，不再讓換行被誤認成另一筆資料。
   if (layoutRepairRows.length) {
     const cases = repairNumbers.slice(0, layoutRepairRows.length);
-    fields.model = layoutRepairRows.map(r => getSheetModel(r.model)).join("\n");
+    const modelFallback = fields.model || firstMatch(normalized, [
+      /客戶維修單號\s*[:：]?\s*(MS\d+|PA\d+(?:槍把)?|TC\d+|SBarco(?:\(含裁刀\))?|RP-?\d+|ZD\d+|DA\d+|TSC\s+ALPHA-40L)/i
+    ]);
+    fields.model = layoutRepairRows.map(r => {
+      const rowModel = normalizeRepairModel(r.model);
+      const hasKnownModel = /(?:Cino\s*A678|MS\d+|PA\d+|TC\d+|RP-?\d+|ZD\d+|DA\d+|TSC|SBarco|Sewoo)/i.test(rowModel);
+      return getSheetModel(hasKnownModel ? rowModel : modelFallback);
+    }).join("\n");
     fields.serial = layoutRepairRows.map(r => r.serial).join("\n");
     fields.problem = layoutRepairRows.map(r => cleanIssueText(r.problem, r.serial)).join("\n");
     fields.inspection = layoutRepairRows.map(r => cleanIssueText(r.inspection, r.serial)).join("\n");
