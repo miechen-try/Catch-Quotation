@@ -256,6 +256,11 @@ function buildGoogleSheetRows() {
     .split(/\r?\n/)
     .map(x => x.trim())
     .filter(Boolean);
+  // RR／SR 欄位有時會以斜線、頓號或逗號串在同一行；複製前仍須拆成逐列資料。
+  const splitNumberRows = (value) => String(value || "")
+    .split(/\r?\n|\s*[、,，;；/]\s*/)
+    .map(x => x.trim())
+    .filter(Boolean);
 
   const parts = splitRows(f.partNumbers);
   const names = splitRows(f.products);
@@ -265,20 +270,24 @@ function buildGoogleSheetRows() {
   const serials = splitRows(f.serial);
   const problems = splitRows(f.problem);
   const inspections = splitRows(f.inspection);
-  const cases = splitRows(f.caseNumber);
-  const srs = splitRows(f.srNumber);
+  const cases = splitNumberRows(f.caseNumber);
+  const srs = splitNumberRows(f.srNumber);
 
-  const rowCount = Math.max(
-    parts.length, names.length, quantities.length, prices.length,
+  const deviceCount = Math.max(
     models.length, serials.length, problems.length, inspections.length,
     cases.length, srs.length, 1
   );
+  const rowCount = Math.max(
+    deviceCount, parts.length, names.length, quantities.length, prices.length, 1
+  );
 
-  // 單一零件列、數量剛好等於設備列數時，視為每台設備各一件：
-  // 零件料號／品名／單價沿用同一項，數量拆成每列 1。
-  if (rowCount > 1 && parts.length === 1 && names.length === 1 && quantities.length === 1) {
+  // 一個零件品項對應多台設備：每台各輸出一列，品號／品名／單價重複，數量改為 1。
+  // 例如兩台設備、PDF 零件數量 2，輸出兩列數量 1、1，單價都維持 2,500。
+  if (rowCount > 1 && quantities.length === 1) {
     const q = Number(String(quantities[0]).replace(/,/g, ""));
-    if (Number.isFinite(q) && q === rowCount) quantities = Array(rowCount).fill("1");
+    if (Number.isFinite(q) && q === rowCount && deviceCount === rowCount) {
+      quantities = Array(rowCount).fill("1");
+    }
   }
 
   const pick = (arr, i) => arr[i] || (arr.length === 1 ? arr[0] : "");
@@ -775,7 +784,21 @@ function parseQuotation(text, layoutPages = null) {
     fields.inspection = layoutRepairRows.map(r => cleanIssueText(r.inspection, r.serial)).join("\n");
     if (cases.length) fields.caseNumber = cases.join("\n");
     const rowSrs = layoutRepairRows.map(r => r.sr).filter(Boolean);
-    if (rowSrs.length) fields.srNumber = rowSrs.join("\n");
+    const headerSrsMatch = normalized.match(/SR\s*單\s*號\s*[:：]?\s*([0-9/、,，\s]+)/i);
+    const headerSrs = headerSrsMatch
+      ? [...headerSrsMatch[1].matchAll(/\d{6,}/g)].map(m => m[0])
+      : [];
+    const orderedSrs = rowSrs.length >= layoutRepairRows.length
+      ? rowSrs.slice(0, layoutRepairRows.length)
+      : headerSrs.length >= layoutRepairRows.length
+        ? headerSrs.slice(0, layoutRepairRows.length)
+        : [...rowSrs, ...headerSrs].filter((v, i, a) => a.indexOf(v) === i).slice(0, layoutRepairRows.length);
+    if (orderedSrs.length) fields.srNumber = orderedSrs.join("\n");
+
+    // 客戶維修單號可能在同一行以斜線分隔，仍依設備數量拆列。
+    if (repairNumbers.length >= layoutRepairRows.length) {
+      fields.caseNumber = repairNumbers.slice(0, layoutRepairRows.length).join("\n");
+    }
   }
 
   fields.partNumbers = partNumbers.join("\n");
