@@ -356,6 +356,8 @@ function sectionBetween(text, starts, ends) {
 
 function normalizeRepairModel(raw) {
   const value = String(raw || "").replace(/\s+/g, " ").trim();
+  // ZD230 的機器品號可能是 ZD23042-307G00EZ，型號仍應統一為 ZD230。
+  if (/\bZD\s*230/i.test(value)) return "ZD230";
   const m = value.match(/(Cino\s*A678\s*\(RS232\)|MS\d+|PA\d+(?:槍把)?|TC\d+|RP-?\d+|ZD\d+|DA\d+|SBarco(?:\(含裁刀\))?|Sewoo|TSC\s+ALPHA-40L)/i);
   return m ? m[1] : value;
 }
@@ -444,7 +446,7 @@ function extractRepairTableByColumns(layoutPages) {
       if (!machineText) continue;
 
       const model = normalizeRepairModel(machineText);
-      const serialMatch = machineText.match(/(?:^|\s)(UTA[A-Z0-9]{6,}|UT[A-Z0-9]{6,}|C[A-Z0-9]{6,}|\d{8,})(?:\s|$)/i);
+      const serialMatch = machineText.match(/(?:^|\s)([A-Z0-9]{9,})(?:\s|$)/i);
       const serial = serialMatch ? serialMatch[1] : "";
       if (!model || !serial) continue;
 
@@ -724,6 +726,17 @@ function parseQuotation(text, layoutPages = null) {
     if (m) fields.inspection = cleanIssueText(m[1], fields.serial);
   }
 
+  // 備援：部分報價單沒有「客戶維修單號」區塊，檢測說明仍在表格欄位中；
+  // 直接從「檢測說明」標題取值，遇到固定條款／料號表頭即停止。
+  if (!fields.inspection) {
+    const inspectionSection = normalized.match(
+      /檢測說明\s*([\s\S]*?)(?=\s*(?:1[、．.]\s*若發票統編|若發票統編|礙於保管問題|No\.\s*料\s*號|料\s*號\s*品\s*名|附\s*註|附註|$))/i
+    );
+    if (inspectionSection && /(?:^|\s)1\./.test(inspectionSection[1])) {
+      fields.inspection = cleanInspectionReply(inspectionSection[1]);
+    }
+  }
+
   // 全域備援：即使表格欄位順序被 PDF.js 打散，也優先擷取日期開頭的故障現象。
   if (!fields.problem) {
     const m = normalized.match(/\b(\d{1,2}\/\d{1,2}\s+.*?)(?=\s*客戶維修單號)/i);
@@ -838,7 +851,11 @@ function parseQuotation(text, layoutPages = null) {
   }
 
   // ZD230 報價單的報修設備統一輸出 Google Sheet 使用的正式名稱。
-  if (/ZD\s*230/i.test(fields.model)) {
+  // 某些 PDF 的「客戶維修單號」沒有型號，型號只出現在機器品號 ZD23042-... 中。
+  if (/ZD\s*230/i.test(fields.model) || /\bZD230\d*[-A-Z0-9.]*/i.test(normalized)) {
+    if (/\bZD230\d*[-A-Z0-9.]*/i.test(normalized) && !/ZD\s*230/i.test(fields.model)) {
+      fields.model = "ZD230";
+    }
     fields.model = fields.model.split(/\r?\n/).map(v =>
       /ZD\s*230/i.test(v) ? "標籤機ZD230" : getSheetModel(normalizeRepairModel(v) || v)
     ).join("\n");
