@@ -214,6 +214,8 @@ function mapContactToWarehouse(value) {
   if (["emma lin", "benson kuo", "benson", "emily"].some(name => lower.includes(name))) {
     return "SOC北倉";
   }
+  // 蝦皮下貨聯絡人固定顯示「門市」，不得誤套用 IM 北倉規則。
+  if (lower.includes("陳俐瑾") && lower.includes("下貨請電連")) return "門市";
   // 保留既有特殊聯絡人對應規則。
   if (["陳俐瑾", "林嘉祥", "elaine lei", "claire pang"].some(name => lower.includes(name.toLowerCase()))) return "IM北倉";
   if (["tiana", "ann chen", "孫健豪", "侯淑婷"].some(name => lower.includes(name.toLowerCase()))) return "SOC南倉";
@@ -470,6 +472,26 @@ function extractRepairNumbers(text) {
   if (!m) return [];
   const compact = m[0].replace(/\s+/g, "");
   return [...compact.matchAll(/RR\d{6,}/gi)].map(x => x[0].toUpperCase());
+}
+
+function cleanInspectionReply(value) {
+  if (!value) return "";
+  let result = cleanIssueText(value);
+
+  // 報價單的檢測說明欄後方常被 PDF 文字排序串入固定條款及料號表頭。
+  const stopPatterns = [
+    /\s*1[、．.]\s*若發票統編/i,
+    /\s*若發票統編/i,
+    /\s*礙於保管問題/i,
+    /\s*A137\b/i,
+    /\s*No\.\s*料\s*號\s*品\s*名/i,
+    /\s*料\s*號\s*品\s*名\s*單位\s*數量/i
+  ];
+  for (const pattern of stopPatterns) {
+    const index = result.search(pattern);
+    if (index >= 0) result = result.slice(0, index).trim();
+  }
+  return result;
 }
 
 function parseQuotation(text, layoutPages = null) {
@@ -805,6 +827,22 @@ function parseQuotation(text, layoutPages = null) {
   fields.products = productNames.join("\n");
   fields.quantities = quantities.join("\n");
   fields.unitPrices = unitPrices.join("\n");
+
+  // 最終清理：防止固定報價條款與料號表頭混入廠商檢測回覆。
+  fields.inspection = cleanInspectionReply(fields.inspection);
+
+  // 日期型故障現象備援，例如「10/15 故障」；不讓整段表格文字佔據故障原因。
+  if (!fields.problem || /客戶維修單號|報價單位|料\s*號|A137/i.test(fields.problem)) {
+    const datedFault = normalized.match(/\b(\d{1,2}\/\d{1,2}\s*故障)/i);
+    if (datedFault) fields.problem = cleanIssueText(datedFault[1], fields.serial);
+  }
+
+  // ZD230 報價單的報修設備統一輸出 Google Sheet 使用的正式名稱。
+  if (/ZD\s*230/i.test(fields.model)) {
+    fields.model = fields.model.split(/\r?\n/).map(v =>
+      /ZD\s*230/i.test(v) ? "標籤機ZD230" : getSheetModel(normalizeRepairModel(v) || v)
+    ).join("\n");
+  }
 
   return fields;
 }
