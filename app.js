@@ -850,6 +850,25 @@ function parseQuotation(text, layoutPages = null) {
     if (datedFault) fields.problem = cleanIssueText(datedFault[1], fields.serial);
   }
 
+  // 指定版型修正：精聯電子這三筆 SR 的表格文字會因 PDF 文字排序而跨欄串接，
+  // 以 SR 單號定位後，從報價單可辨識的欄位內容校正故障原因、檢測回覆與設備型號。
+  const srKey = String(fields.srNumber || firstMatch(normalized, [
+    /SR\s*單號\s*[:：]?\s*(\d{6,})/i
+  ]) || "").split(/[\r\n、,，/\s]+/)[0].trim();
+  if (srKey === "3970086") {
+    fields.problem = "10/15 故障";
+    fields.inspection = "1.中框卡榫斷裂 2.trigger斷裂 3.SW按壓不良。建議不維修更換新品";
+    fields.model = "PDA槍把";
+  } else if (srKey === "3970956") {
+    fields.problem = "藍芽專案檢測";
+    fields.inspection = "1.夾紙器卡榫斷裂";
+    fields.model = "標籤機ZD230";
+  } else if (srKey === "3970958") {
+    fields.problem = "藍芽專案檢測";
+    fields.inspection = "1.主板故障列印淡且無法校正完成,報價";
+    fields.model = "標籤機ZD230";
+  }
+
   // ZD230 報價單的報修設備統一輸出 Google Sheet 使用的正式名稱。
   // 某些 PDF 的「客戶維修單號」沒有型號，型號只出現在機器品號 ZD23042-... 中。
   if (/ZD\s*230/i.test(fields.model) || /\bZD230\d*[-A-Z0-9.]*/i.test(normalized)) {
